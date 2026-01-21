@@ -89,7 +89,7 @@ uruflow uses a custom binary protocol we built instead of HTTP. this enables:
 
 ```bash
 # download
-curl -fsSL https://github.com/uruflow/uruflow/releases/latest/download/uruflow-linux-amd64 -o uruflow
+curl -fsSL https://github.com/urustack/uruflow/releases/latest/download/uruflow-linux-amd64 -o uruflow
 
 # install
 chmod +x uruflow
@@ -106,7 +106,7 @@ uruflow
 
 ```bash
 # download
-curl -fsSL https://github.com/uruflow/uruflow/releases/latest/download/uruflow-agent-linux-amd64 -o uruflow-agent
+curl -fsSL https://github.com/urustack/uruflow/releases/latest/download/uruflow-agent-linux-amd64 -o uruflow-agent
 
 # install
 chmod +x uruflow-agent

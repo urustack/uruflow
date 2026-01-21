@@ -1,0 +1,15 @@
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+.DS_Store
+.env
+.env.local
+.idea/
+.vscode/
+*.log

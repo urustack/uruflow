@@ -126,6 +126,36 @@ func (s *Service) ListContainers(ctx context.Context) ([]Container, error) {
 	return result, nil
 }
 
+func (s *Service) IsUruflowManaged(ctx context.Context, containerID string) (bool, error) {
+	resp, err := s.client.Get(fmt.Sprintf("http://localhost/containers/%s/json", containerID))
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	var inspect struct {
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&inspect); err != nil {
+		return false, err
+	}
+
+	if managed, exists := inspect.Config.Labels["io.uruflow.managed"]; exists && managed == "true" {
+		return true, nil
+	}
+
+	if project, exists := inspect.Config.Labels["com.docker.compose.project"]; exists {
+		if strings.HasPrefix(project, "uruflow-") {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func (s *Service) GetContainerStats(ctx context.Context, containerID string) (*Container, error) {
 	resp, err := s.client.Get(fmt.Sprintf("http://localhost/containers/%s/stats?stream=false", containerID))
 	if err != nil {

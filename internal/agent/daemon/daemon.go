@@ -355,6 +355,12 @@ func (d *Daemon) sendMetrics() {
 
 		if err == nil {
 			for _, c := range containers {
+				isManaged, err := d.docker.IsUruflowManaged(ctx, c.ID)
+				if err != nil || !isManaged {
+					logger.Debug("[AGENT] skipping non-uruflow container: %s", c.Name)
+					continue
+				}
+
 				cm := protocol.Container{
 					ID:           c.ID,
 					Name:         c.Name,
@@ -380,7 +386,9 @@ func (d *Daemon) sendMetrics() {
 
 				payload.Containers = append(payload.Containers, cm)
 			}
-			logger.Debug("[AGENT] reporting %d containers", len(payload.Containers))
+			if len(payload.Containers) > 0 {
+				logger.Debug("[AGENT] reporting %d uruflow-managed containers", len(payload.Containers))
+			}
 		} else {
 			logger.Warn("[AGENT] failed to list containers: %v", err)
 		}
@@ -488,9 +496,13 @@ func (d *Daemon) handleDeploy(cmd protocol.CommandPayload) {
 
 	d.sendCommandDone(cmd.ID, status, exitCode, output)
 
-	if result != nil {
+	if result != nil && result.Commit != "" {
+		commitShort := result.Commit
+		if len(commitShort) > 7 {
+			commitShort = commitShort[:7]
+		}
 		logger.Info("[AGENT] deploy %s completed: status=%s duration=%v commit=%s",
-			cmd.ID, status, result.Duration, result.Commit[:7])
+			cmd.ID, status, result.Duration, commitShort)
 	}
 }
 

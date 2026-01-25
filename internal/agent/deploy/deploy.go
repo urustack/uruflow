@@ -129,16 +129,20 @@ func (e *Executor) resolveCommand(repoDir string, cfg Config) (string, error) {
 		if file == "" {
 			return "", fmt.Errorf("no compose file found")
 		}
-		return fmt.Sprintf("docker compose -f %s up -d --build", file), nil
+		projectName := fmt.Sprintf("uruflow-%s", cfg.Name)
+		return fmt.Sprintf("docker compose -p %s -f %s up -d --build", projectName, file), nil
 
 	case "dockerfile":
+		containerName := fmt.Sprintf("uruflow-%s", cfg.Name)
 		if cfg.BuildFile != "" {
-			return fmt.Sprintf("docker build -f %s -t %s . && docker run -d --name %s %s", cfg.BuildFile, cfg.Name, cfg.Name, cfg.Name), nil
+			return fmt.Sprintf("docker build -f %s -t %s . && docker run -d --name %s --label io.uruflow.managed=true %s",
+				cfg.BuildFile, cfg.Name, containerName, cfg.Name), nil
 		}
 		if !e.fileExists(repoDir, "Dockerfile") {
 			return "", fmt.Errorf("no Dockerfile found")
 		}
-		return fmt.Sprintf("docker build -t %s . && docker run -d --name %s %s", cfg.Name, cfg.Name, cfg.Name), nil
+		return fmt.Sprintf("docker build -t %s . && docker run -d --name %s --label io.uruflow.managed=true %s",
+			cfg.Name, containerName, cfg.Name), nil
 
 	case "makefile":
 		file := cfg.BuildFile

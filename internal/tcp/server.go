@@ -320,10 +320,10 @@ func (s *Server) handleMetrics(conn *Connection, msg *protocol.Message) {
 
 	activeAlerts, _ := s.store.GetActiveAlerts()
 
-	activeAlertMap := make(map[string]bool)
+	activeAlertMap := make(map[string]*models.Alert)
 	for _, a := range activeAlerts {
-		if a.AgentID == conn.AgentID && a.Resolved == false {
-			activeAlertMap[a.Message] = true
+		if a.AgentID == conn.AgentID && !a.Resolved {
+			activeAlertMap[a.Message] = &a
 		}
 	}
 
@@ -345,26 +345,29 @@ func (s *Server) handleMetrics(conn *Connection, msg *protocol.Message) {
 		}
 		s.store.UpsertContainer(container)
 
-		if c.Status != "running" &&
-			c.Status != "created" &&
-			c.Status != "starting" &&
-			c.Status != "restarting" {
+		alertMsg := fmt.Sprintf("Container %s is not running", c.Name)
 
-			potentialAlert := logic.CheckContainerDown(conn.AgentID, conn.AgentName, c.Name)
-
-			if potentialAlert != nil {
-				if !activeAlertMap[potentialAlert.Message] {
-					s.store.CreateAlert(potentialAlert)
-					activeAlertMap[potentialAlert.Message] = true
+		if c.Status == "running" {
+			if alert, exists := activeAlertMap[alertMsg]; exists {
+				s.store.ResolveAlert(alert.ID)
+				delete(activeAlertMap, alertMsg)
+			}
+		} else if c.Status != "created" && c.Status != "starting" && c.Status != "restarting" {
+			if _, exists := activeAlertMap[alertMsg]; !exists {
+				if alert := logic.CheckContainerDown(conn.AgentID, conn.AgentName, c.Name); alert != nil {
+					s.store.CreateAlert(alert)
+					activeAlertMap[alert.Message] = alert
 				}
 			}
 		}
 	}
 
 	createIfNotExists := func(alert *models.Alert) {
-		if alert != nil && !activeAlertMap[alert.Message] {
-			s.store.CreateAlert(alert)
-			activeAlertMap[alert.Message] = true
+		if alert != nil {
+			if _, exists := activeAlertMap[alert.Message]; !exists {
+				s.store.CreateAlert(alert)
+				activeAlertMap[alert.Message] = alert
+			}
 		}
 	}
 

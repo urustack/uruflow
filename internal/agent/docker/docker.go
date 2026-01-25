@@ -37,6 +37,7 @@ type Service struct {
 
 type Container struct {
 	ID           string
+	FullID       string
 	Name         string
 	Image        string
 	Status       string
@@ -49,6 +50,7 @@ type Container struct {
 	NetworkTx    uint64
 	RestartCount int
 	StartedAt    int64
+	IsManaged    bool
 }
 
 func New(socket string) (*Service, error) {
@@ -83,47 +85,94 @@ func (s *Service) ListContainers(ctx context.Context) ([]Container, error) {
 	defer resp.Body.Close()
 
 	var containers []struct {
-		ID      string   `json:"Id"`
-		Names   []string `json:"Names"`
-		Image   string   `json:"Image"`
-		Status  string   `json:"Status"`
-		State   string   `json:"State"`
-		Created int64    `json:"Created"`
+		ID      string            `json:"Id"`
+		Names   []string          `json:"Names"`
+		Image   string            `json:"Image"`
+		Status  string            `json:"Status"`
+		State   string            `json:"State"`
+		Created int64             `json:"Created"`
+		Labels  map[string]string `json:"Labels"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&containers); err != nil {
 		return nil, err
 	}
 
-	result := make([]Container, len(containers))
-	for i, c := range containers {
+	result := make([]Container, 0, len(containers))
+
+	for _, c := range containers {
 		name := ""
 		if len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
 
+		isManaged := s.checkManagedFromLabels(c.Labels)
+
 		health := "none"
+		restartCount := 0
+		var startedAt int64
+
 		inspect, err := s.inspectContainer(c.ID)
 		if err == nil {
 			if inspect.State.Health != nil {
 				health = inspect.State.Health.Status
 			}
-			result[i].RestartCount = inspect.RestartCount
+			restartCount = inspect.RestartCount
 			if inspect.State.StartedAt != "" {
 				t, _ := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
-				result[i].StartedAt = t.Unix()
+				startedAt = t.Unix()
 			}
 		}
 
-		result[i].ID = c.ID[:12]
-		result[i].Name = name
-		result[i].Image = c.Image
-		result[i].Status = c.Status
-		result[i].State = c.State
-		result[i].Health = health
+		result = append(result, Container{
+			ID:           c.ID[:12],
+			FullID:       c.ID,
+			Name:         name,
+			Image:        c.Image,
+			Status:       c.Status,
+			State:        c.State,
+			Health:       health,
+			RestartCount: restartCount,
+			StartedAt:    startedAt,
+			IsManaged:    isManaged,
+		})
 	}
 
 	return result, nil
+}
+
+func (s *Service) ListManagedContainers(ctx context.Context) ([]Container, error) {
+	all, err := s.ListContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	managed := make([]Container, 0)
+	for _, c := range all {
+		if c.IsManaged {
+			managed = append(managed, c)
+		}
+	}
+
+	return managed, nil
+}
+
+func (s *Service) checkManagedFromLabels(labels map[string]string) bool {
+	if labels == nil {
+		return false
+	}
+
+	if managed, exists := labels["io.uruflow.managed"]; exists && managed == "true" {
+		return true
+	}
+
+	if project, exists := labels["com.docker.compose.project"]; exists {
+		if strings.HasPrefix(project, "uruflow-") {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *Service) IsUruflowManaged(ctx context.Context, containerID string) (bool, error) {
@@ -143,17 +192,7 @@ func (s *Service) IsUruflowManaged(ctx context.Context, containerID string) (boo
 		return false, err
 	}
 
-	if managed, exists := inspect.Config.Labels["io.uruflow.managed"]; exists && managed == "true" {
-		return true, nil
-	}
-
-	if project, exists := inspect.Config.Labels["com.docker.compose.project"]; exists {
-		if strings.HasPrefix(project, "uruflow-") {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return s.checkManagedFromLabels(inspect.Config.Labels), nil
 }
 
 func (s *Service) GetContainerStats(ctx context.Context, containerID string) (*Container, error) {

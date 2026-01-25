@@ -355,8 +355,7 @@ func (d *Daemon) sendMetrics() {
 
 		if err == nil {
 			for _, c := range containers {
-				isManaged, err := d.docker.IsUruflowManaged(ctx, c.ID)
-				if err != nil || !isManaged {
+				if !c.IsManaged {
 					logger.Debug("[AGENT] skipping non-uruflow container: %s", c.Name)
 					continue
 				}
@@ -373,7 +372,7 @@ func (d *Daemon) sendMetrics() {
 
 				if c.State == "running" {
 					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-					stats, err := d.docker.GetContainerStats(ctx, c.ID)
+					stats, err := d.docker.GetContainerStats(ctx, c.FullID)
 					cancel()
 					if err == nil {
 						cm.CPUPercent = stats.CPUPercent
@@ -514,8 +513,13 @@ func (d *Daemon) handleContainerLogsRequest(req protocol.ContainerLogsRequestPay
 	d.streamCancels[req.ContainerID] = cancel
 	d.streamMu.Unlock()
 
+	containerID := req.ContainerID
+	if len(containerID) > 12 {
+		containerID = containerID[:12]
+	}
+
 	logger.Info("[AGENT] starting log stream for container %s (tail: %d, follow: %t)",
-		req.ContainerID[:12], req.Tail, req.Follow)
+		containerID, req.Tail, req.Follow)
 
 	err := d.docker.StreamLogsWithTail(ctx, req.ContainerID, req.Tail, func(line string) {
 		payload := protocol.ContainerLogsDataPayload{
@@ -535,9 +539,9 @@ func (d *Daemon) handleContainerLogsRequest(req protocol.ContainerLogsRequestPay
 	})
 
 	if err != nil && err != context.Canceled {
-		logger.Error("[AGENT] log stream error for container %s: %v", req.ContainerID[:12], err)
+		logger.Error("[AGENT] log stream error for container %s: %v", containerID, err)
 	} else {
-		logger.Debug("[AGENT] log stream ended for container %s", req.ContainerID[:12])
+		logger.Debug("[AGENT] log stream ended for container %s", containerID)
 	}
 
 	d.stopContainerStream(req.ContainerID)
@@ -547,7 +551,11 @@ func (d *Daemon) stopContainerStream(containerID string) {
 	d.streamMu.Lock()
 	defer d.streamMu.Unlock()
 	if cancel, ok := d.streamCancels[containerID]; ok {
-		logger.Debug("[AGENT] stopping log stream for container %s", containerID[:12])
+		shortID := containerID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		logger.Debug("[AGENT] stopping log stream for container %s", shortID)
 		cancel()
 		delete(d.streamCancels, containerID)
 	}

@@ -1,19 +1,6 @@
 /*
  * Copyright (C) 2026 Mustafa Naseer (Mustafa Gaeed)
- *
- * This file is part of uruflow.
- *
- * uruflow is free software: you can redistribute it and/or modify
- * it under the terms of the MIT License as described in the
- * LICENSE file distributed with this project.
- *
- * uruflow is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * MIT License for more details.
- *
- * You should have received a copy of the MIT License
- * along with uruflow. If not, see the LICENSE file in the project root.
+ * ... (License Header)
  */
 
 package tui
@@ -25,6 +12,7 @@ import (
 	"github.com/urustack/uruflow/internal/api"
 	"github.com/urustack/uruflow/internal/config"
 	"github.com/urustack/uruflow/internal/storage"
+	"github.com/urustack/uruflow/internal/tcp/protocol"
 	"github.com/urustack/uruflow/internal/tui/views"
 )
 
@@ -39,41 +27,58 @@ const (
 	ViewDeploy
 	ViewLogs
 	ViewInit
+	ViewContainerLogs
 )
 
+var globalLogChannel = make(chan views.ContainerLogsMsg, 100)
+
+func waitForContainerLogs() tea.Msg {
+	return <-globalLogChannel
+}
+
 type Model struct {
-	ActiveView ViewState
-	Width      int
-	Height     int
-	Ready      bool
-	Store      storage.Store
-	Config     *config.Config
-	CfgPath    string
-	Server     *api.Server
-	Dashboard  views.DashboardModel
-	Agents     views.AgentsModel
-	Repos      views.ReposModel
-	Alerts     views.AlertsModel
-	Deploy     views.DeployModel
-	Logs       views.LogsModel
-	InitState  views.InitModel
+	ActiveView    ViewState
+	Width         int
+	Height        int
+	Ready         bool
+	Store         storage.Store
+	Config        *config.Config
+	CfgPath       string
+	Server        *api.Server
+	Dashboard     views.DashboardModel
+	Agents        views.AgentsModel
+	Repos         views.ReposModel
+	Alerts        views.AlertsModel
+	Deploy        views.DeployModel
+	Logs          views.LogsModel
+	ContainerLogs views.ContainerLogsModel
+	InitState     views.InitModel
 }
 
 func NewModel(store storage.Store, cfg *config.Config, cfgPath string, server *api.Server) Model {
 	deployService := server.GetDeployService()
+
+	server.GetTCPServer().SetContainerLogHandler(func(agentID string, data protocol.ContainerLogsDataPayload) {
+		select {
+		case globalLogChannel <- views.ContainerLogsMsg(data):
+		default:
+		}
+	})
+
 	return Model{
-		ActiveView: ViewDashboard,
-		Store:      store,
-		Config:     cfg,
-		CfgPath:    cfgPath,
-		Server:     server,
-		Dashboard:  views.NewDashboardModel(store),
-		Agents:     views.NewAgentsModel(store, cfg, cfgPath),
-		Repos:      views.NewReposModel(store, cfg, cfgPath, deployService),
-		Alerts:     views.NewAlertsModel(store),
-		Deploy:     views.NewDeployModel(store),
-		Logs:       views.NewLogsModel(store),
-		InitState:  views.NewInitModel(),
+		ActiveView:    ViewDashboard,
+		Store:         store,
+		Config:        cfg,
+		CfgPath:       cfgPath,
+		Server:        server,
+		Dashboard:     views.NewDashboardModel(store),
+		Agents:        views.NewAgentsModel(store, cfg, cfgPath),
+		Repos:         views.NewReposModel(store, cfg, cfgPath, deployService),
+		Alerts:        views.NewAlertsModel(store),
+		Deploy:        views.NewDeployModel(store),
+		Logs:          views.NewLogsModel(store),
+		ContainerLogs: views.NewContainerLogsModel(server),
+		InitState:     views.NewInitModel(),
 	}
 }
 
@@ -85,7 +90,7 @@ func (m *Model) Init() tea.Cmd {
 	if m.ActiveView == ViewInit {
 		return m.InitState.Init()
 	}
-	return m.Dashboard.Init()
+	return tea.Batch(m.Dashboard.Init(), waitForContainerLogs)
 }
 
 func (m Model) isInputActive() bool {
@@ -106,6 +111,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case views.ContainerLogsMsg:
+		cmds = append(cmds, waitForContainerLogs)
+		if m.ActiveView == ViewContainerLogs {
+			var newModel tea.Model
+			newModel, cmd = m.ContainerLogs.Update(msg)
+			m.ContainerLogs = newModel.(views.ContainerLogsModel)
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
@@ -121,6 +136,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.ActiveView == ViewLogs && m.Logs.Mode == views.LogsModeView {
 					break
 				}
+				if m.ActiveView == ViewContainerLogs && m.ContainerLogs.Mode == 1 {
+					break
+				}
 				m.ActiveView = ViewDashboard
 				m.Dashboard.ClearMessage()
 				return m, m.Dashboard.Init()
@@ -130,7 +148,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.isInputActive() {
 			switch msg.String() {
 			case "q":
-				if m.ActiveView != ViewInit && m.ActiveView != ViewDeploy {
+				if m.ActiveView != ViewInit && m.ActiveView != ViewDeploy && m.ActiveView != ViewContainerLogs {
 					return m, tea.Quit
 				}
 			case "tab":
@@ -151,6 +169,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					case ViewLogs:
 						m.ActiveView = ViewDashboard
 						m.Dashboard.ClearMessage()
+						cmd = m.Dashboard.Init()
+					case ViewContainerLogs:
+						m.ActiveView = ViewDashboard
 						cmd = m.Dashboard.Init()
 					default:
 						m.ActiveView = ViewDashboard
@@ -184,6 +205,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ActiveView = ViewLogs
 					return m, m.Logs.Init()
 				}
+				if m.ActiveView == ViewAgents {
+					if len(m.Agents.Agents) > 0 {
+						agent := m.Agents.Agents[m.Agents.Cursor]
+						m.ContainerLogs.SetAgent(agent)
+						m.ActiveView = ViewContainerLogs
+						return m, m.ContainerLogs.Init()
+					}
+				}
 			}
 		}
 
@@ -213,6 +242,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Deploy.Height = msg.Height
 		m.Logs.Width = msg.Width
 		m.Logs.Height = msg.Height
+		m.ContainerLogs.Width = msg.Width
+		m.ContainerLogs.Height = msg.Height
 		m.InitState.Width = msg.Width
 		m.InitState.Height = msg.Height
 	}
@@ -248,6 +279,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newModel, cmd = m.Logs.Update(msg)
 		m.Logs = newModel.(views.LogsModel)
 		cmds = append(cmds, cmd)
+	case ViewContainerLogs:
+		var newModel tea.Model
+		newModel, cmd = m.ContainerLogs.Update(msg)
+		m.ContainerLogs = newModel.(views.ContainerLogsModel)
+		cmds = append(cmds, cmd)
 	case ViewInit:
 		var newModel tea.Model
 		newModel, cmd = m.InitState.Update(msg)
@@ -275,6 +311,8 @@ func (m *Model) View() string {
 		return m.Deploy.View()
 	case ViewLogs:
 		return m.Logs.View()
+	case ViewContainerLogs:
+		return m.ContainerLogs.View()
 	case ViewInit:
 		return m.InitState.View()
 	default:

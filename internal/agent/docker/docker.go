@@ -209,7 +209,12 @@ func (s *Service) inspectContainer(id string) (*inspectResult, error) {
 }
 
 func (s *Service) StreamLogs(ctx context.Context, containerID string, onLine func(string)) error {
-	resp, err := s.client.Get(fmt.Sprintf("http://localhost/containers/%s/logs?stdout=true&stderr=true&follow=true", containerID))
+	return s.StreamLogsWithTail(ctx, containerID, 100, onLine)
+}
+
+func (s *Service) StreamLogsWithTail(ctx context.Context, containerID string, tail int, onLine func(string)) error {
+	url := fmt.Sprintf("http://localhost/containers/%s/logs?stdout=true&stderr=true&follow=true&timestamps=true&tail=%d", containerID, tail)
+	resp, err := s.client.Get(url)
 	if err != nil {
 		return err
 	}
@@ -221,15 +226,41 @@ func (s *Service) StreamLogs(ctx context.Context, containerID string, onLine fun
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			line, err := reader.ReadString('\n')
+			header := make([]byte, 8)
+			_, err := io.ReadFull(reader, header)
 			if err == io.EOF {
 				return nil
 			}
 			if err != nil {
-				return err
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil {
+					return err
+				}
+				if onLine != nil && strings.TrimSpace(line) != "" {
+					onLine(strings.TrimSpace(line))
+				}
+				continue
 			}
-			if onLine != nil {
-				onLine(strings.TrimSpace(line))
+
+			streamType := "stdout"
+			if header[0] == 2 {
+				streamType = "stderr"
+			}
+
+			size := int(header[4])<<24 | int(header[5])<<16 | int(header[6])<<8 | int(header[7])
+			if size > 0 && size < 1024*1024 {
+				content := make([]byte, size)
+				_, err := io.ReadFull(reader, content)
+				if err != nil {
+					return err
+				}
+				line := strings.TrimSpace(string(content))
+				if onLine != nil && line != "" {
+					if streamType == "stderr" {
+						line = "[stderr] " + line
+					}
+					onLine(line)
+				}
 			}
 		}
 	}

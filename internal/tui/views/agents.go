@@ -300,7 +300,7 @@ func (m AgentsModel) viewList() string {
 
 	content += "\n" + styles.Line(w) + "\n"
 	content += components.Help([][]string{
-		{"↑↓", "navigate"}, {"enter", "expand"}, {"+", "add"}, {"-", "remove"}, {"r", "refresh"}, {"esc", "back"},
+		{"↑↓", "navigate"}, {"enter", "expand"}, {"l", "logs"}, {"+", "add"}, {"-", "remove"}, {"r", "refresh"}, {"esc", "back"},
 	})
 
 	return content

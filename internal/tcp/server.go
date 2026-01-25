@@ -41,14 +41,15 @@ const (
 )
 
 type Server struct {
-	cfg         *config.Config
-	store       storage.Store
-	listener    net.Listener
-	connections map[string]*Connection
-	mu          sync.RWMutex
-	done        chan struct{}
-	onLog       func(agentID string, log *models.CommandLog)
-	onMetrics   func(agentID string, metrics *models.AgentMetrics)
+	cfg            *config.Config
+	store          storage.Store
+	listener       net.Listener
+	connections    map[string]*Connection
+	mu             sync.RWMutex
+	done           chan struct{}
+	onLog          func(agentID string, log *models.CommandLog)
+	onMetrics      func(agentID string, metrics *models.AgentMetrics)
+	onContainerLog func(agentID string, data protocol.ContainerLogsDataPayload)
 }
 
 func NewServer(cfg *config.Config, store storage.Store) *Server {
@@ -66,6 +67,10 @@ func (s *Server) SetLogHandler(handler func(agentID string, log *models.CommandL
 
 func (s *Server) SetMetricsHandler(handler func(agentID string, metrics *models.AgentMetrics)) {
 	s.onMetrics = handler
+}
+
+func (s *Server) SetContainerLogHandler(handler func(agentID string, data protocol.ContainerLogsDataPayload)) {
+	s.onContainerLog = handler
 }
 
 func (s *Server) Start() error {
@@ -282,6 +287,11 @@ func (s *Server) processMessage(conn *Connection, msg *protocol.Message) {
 		conn.UpdatePing()
 	case protocol.TypeDisconnect:
 		conn.Close()
+	case protocol.TypeContainerLogsData:
+		var data protocol.ContainerLogsDataPayload
+		if err := msg.Decode(&data); err == nil && s.onContainerLog != nil {
+			s.onContainerLog(conn.AgentID, data)
+		}
 	}
 }
 
@@ -524,6 +534,38 @@ func (s *Server) SendCommand(agentID string, cmd *models.Command) error {
 	}
 
 	return conn.Send(cmdMsg)
+}
+
+func (s *Server) StreamContainerLogs(agentID, containerID string, tail int, follow bool) error {
+	s.mu.RLock()
+	conn, exists := s.connections[agentID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("agent not connected")
+	}
+
+	msg, _ := protocol.NewMessage(protocol.TypeContainerLogsRequest, protocol.ContainerLogsRequestPayload{
+		ContainerID: containerID,
+		Tail:        tail,
+		Follow:      follow,
+	})
+	return conn.Send(msg)
+}
+
+func (s *Server) StopContainerLogs(agentID, containerID string) error {
+	s.mu.RLock()
+	conn, exists := s.connections[agentID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return nil
+	}
+
+	msg, _ := protocol.NewMessage(protocol.TypeContainerLogsStop, protocol.ContainerLogsStopPayload{
+		ContainerID: containerID,
+	})
+	return conn.Send(msg)
 }
 
 func (s *Server) GetConnectedAgents() []string {

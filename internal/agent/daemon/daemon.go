@@ -42,18 +42,20 @@ import (
 const Version = "1.0.0"
 
 type Daemon struct {
-	cfg      *config.Config
-	conn     net.Conn
-	reader   *protocol.Reader
-	writer   *protocol.Writer
-	docker   *docker.Service
-	metrics  *metrics.Collector
-	deployer *deploy.Executor
-	logger   *log.Logger
-	agentID  string
-	name     string
-	stopChan chan struct{}
-	writeMu  sync.Mutex
+	cfg           *config.Config
+	conn          net.Conn
+	reader        *protocol.Reader
+	writer        *protocol.Writer
+	docker        *docker.Service
+	metrics       *metrics.Collector
+	deployer      *deploy.Executor
+	logger        *log.Logger
+	agentID       string
+	name          string
+	stopChan      chan struct{}
+	writeMu       sync.Mutex
+	streamCancels map[string]context.CancelFunc
+	streamMu      sync.Mutex
 }
 
 func New(cfg *config.Config) (*Daemon, error) {
@@ -84,12 +86,13 @@ func New(cfg *config.Config) (*Daemon, error) {
 	workDir := filepath.Join(cfg.DataDir, "repos")
 
 	return &Daemon{
-		cfg:      cfg,
-		docker:   dockerSvc,
-		metrics:  metrics.NewCollector(),
-		deployer: deploy.NewExecutor(workDir),
-		logger:   logger,
-		stopChan: make(chan struct{}),
+		cfg:           cfg,
+		docker:        dockerSvc,
+		metrics:       metrics.NewCollector(),
+		deployer:      deploy.NewExecutor(workDir),
+		logger:        logger,
+		stopChan:      make(chan struct{}),
+		streamCancels: make(map[string]context.CancelFunc),
 	}, nil
 }
 
@@ -279,6 +282,18 @@ func (d *Daemon) handleMessage(msg *protocol.Message) {
 
 	case protocol.TypeDisconnect:
 		d.disconnect()
+
+	case protocol.TypeContainerLogsRequest:
+		var req protocol.ContainerLogsRequestPayload
+		if err := msg.Decode(&req); err == nil {
+			go d.handleContainerLogsRequest(req)
+		}
+
+	case protocol.TypeContainerLogsStop:
+		var stop protocol.ContainerLogsStopPayload
+		if err := msg.Decode(&stop); err == nil {
+			d.stopContainerStream(stop.ContainerID)
+		}
 	}
 }
 
@@ -391,11 +406,6 @@ func (d *Daemon) handleDeploy(cmd protocol.CommandPayload) {
 		return
 	}
 
-	if deployPayload.URL == "" {
-		d.sendCommandDone(cmd.ID, "failed", 1, "repository URL is required")
-		return
-	}
-
 	startMsg, _ := protocol.NewMessage(protocol.TypeCommandStart, protocol.CommandStartPayload{
 		CommandID: cmd.ID,
 		StartedAt: time.Now().Unix(),
@@ -445,6 +455,49 @@ func (d *Daemon) handleDeploy(cmd protocol.CommandPayload) {
 	}
 }
 
+func (d *Daemon) handleContainerLogsRequest(req protocol.ContainerLogsRequestPayload) {
+	d.stopContainerStream(req.ContainerID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.streamMu.Lock()
+	d.streamCancels[req.ContainerID] = cancel
+	d.streamMu.Unlock()
+
+	d.logger.Printf("starting log stream for container %s", req.ContainerID)
+
+	err := d.docker.StreamLogsWithTail(ctx, req.ContainerID, req.Tail, func(line string) {
+		payload := protocol.ContainerLogsDataPayload{
+			ContainerID: req.ContainerID,
+			Line:        line,
+			Stream:      "stdout",
+			Timestamp:   time.Now().Unix(),
+		}
+
+		if len(line) > 9 && line[:9] == "[stderr] " {
+			payload.Stream = "stderr"
+			payload.Line = line[9:]
+		}
+
+		msg, _ := protocol.NewMessage(protocol.TypeContainerLogsData, payload)
+		d.safeWrite(msg)
+	})
+
+	if err != nil && err != context.Canceled {
+		d.logger.Printf("log stream error for %s: %v", req.ContainerID, err)
+	}
+
+	d.stopContainerStream(req.ContainerID)
+}
+
+func (d *Daemon) stopContainerStream(containerID string) {
+	d.streamMu.Lock()
+	defer d.streamMu.Unlock()
+	if cancel, ok := d.streamCancels[containerID]; ok {
+		cancel()
+		delete(d.streamCancels, containerID)
+	}
+}
+
 func (d *Daemon) sendCommandDone(cmdID, status string, exitCode int, output string) {
 	doneMsg, _ := protocol.NewMessage(protocol.TypeCommandDone, protocol.CommandDonePayload{
 		CommandID: cmdID,
@@ -461,6 +514,13 @@ func (d *Daemon) disconnect() {
 		d.conn.Close()
 		d.conn = nil
 	}
+
+	d.streamMu.Lock()
+	for _, cancel := range d.streamCancels {
+		cancel()
+	}
+	d.streamCancels = make(map[string]context.CancelFunc)
+	d.streamMu.Unlock()
 }
 
 func (d *Daemon) writePid() error {

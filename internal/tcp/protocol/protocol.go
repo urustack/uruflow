@@ -53,6 +53,10 @@ const (
 
 	TypeDisconnect MessageType = 0x40
 	TypeError      MessageType = 0x41
+
+	TypeContainerLogsRequest MessageType = 0x50
+	TypeContainerLogsData    MessageType = 0x51
+	TypeContainerLogsStop    MessageType = 0x52
 )
 
 var (
@@ -92,6 +96,12 @@ func (t MessageType) String() string {
 		return "DISCONNECT"
 	case TypeError:
 		return "ERROR"
+	case TypeContainerLogsRequest:
+		return "CONTAINER_LOGS_REQUEST"
+	case TypeContainerLogsData:
+		return "CONTAINER_LOGS_DATA"
+	case TypeContainerLogsStop:
+		return "CONTAINER_LOGS_STOP"
 	default:
 		return "UNKNOWN"
 	}

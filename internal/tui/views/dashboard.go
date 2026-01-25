@@ -233,7 +233,7 @@ func (m DashboardModel) View() string {
 
 	content += "\n" + styles.Line(w) + "\n"
 	content += components.Help([][]string{
-		{"a", "agents"}, {"r", "repos"}, {"x", "alerts"}, {"l", "logs"}, {"d", "deploy"}, {"tab", "cycle"}, {"q", "quit"},
+		{"a", "agents"}, {"r", "repos"}, {"x", "alerts"}, {"l", "history"}, {"d", "deploy"}, {"tab", "cycle"}, {"q", "quit"},
 	})
 
 	return content

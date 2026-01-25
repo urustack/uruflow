@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/urustack/uruflow/internal/config"
 	"github.com/urustack/uruflow/internal/models"
@@ -65,7 +66,11 @@ type ReposModel struct {
 	NewRepo       NewRepoData
 	AgentCursor   int
 	BuildCursor   int
-	err           error
+
+	// Single input model handles all text fields and pasting
+	input textinput.Model
+
+	err error
 }
 
 type NewRepoData struct {
@@ -81,17 +86,26 @@ type NewRepoData struct {
 }
 
 func NewReposModel(store storage.Store, cfg *config.Config, cfgPath string, deployService *services.DeploymentService) ReposModel {
+	ti := textinput.New()
+	ti.Cursor.Style = styles.PrimaryStyle
+	ti.CharLimit = 150
+	ti.Focus()
+
 	return ReposModel{
 		store: store, cfg: cfg, cfgPath: cfgPath, deployService: deployService,
-		Mode: RepoModeList, NewRepo: NewRepoData{Branch: "main", AutoDeploy: true, BuildSystem: "compose"},
+		Mode:    RepoModeList,
+		NewRepo: NewRepoData{Branch: "main", AutoDeploy: true, BuildSystem: "compose"},
+		input:   ti,
 	}
 }
 
 func (m ReposModel) Init() tea.Cmd {
-	return tea.Batch(m.fetchRepos, m.fetchAgents)
+	return tea.Batch(m.fetchRepos, m.fetchAgents, textinput.Blink)
 }
 
 func (m ReposModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch m.Mode {
@@ -120,6 +134,13 @@ func (m ReposModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg
 		return m, nil
 	}
+
+	// Allow textinput to handle cursor blinking
+	if m.Mode == RepoModeAdd {
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+
 	return m, nil
 }
 
@@ -143,6 +164,13 @@ func (m ReposModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.NewRepo = NewRepoData{Branch: "main", AutoDeploy: true, BuildSystem: "compose"}
 		m.BuildCursor = 0
 		m.err = nil
+
+		// Reset input for the first step
+		m.input.SetValue("")
+		m.input.Placeholder = "my-service"
+		m.input.Focus()
+		return m, textinput.Blink
+
 	case "-", "delete", "backspace":
 		if len(m.Repos) > 0 {
 			return m, m.deleteRepo(m.Repos[m.Cursor].Name)
@@ -156,112 +184,99 @@ func (m ReposModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m ReposModel) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Determine if the current step is a selection (not text input)
+	isSelectionStep := (m.AddStep == 3 || m.AddStep == 6)
+
 	switch msg.String() {
 	case "esc":
 		if m.AddStep > 0 {
 			m.AddStep--
+			// Restore previous value to input when going back
+			switch m.AddStep {
+			case 0:
+				m.input.SetValue(m.NewRepo.Name)
+			case 1:
+				m.input.SetValue(m.NewRepo.URL)
+			case 2:
+				m.input.SetValue(m.NewRepo.Branch)
+			case 4:
+				m.input.SetValue(m.NewRepo.BuildFile)
+			case 5:
+				m.input.SetValue(m.NewRepo.Path)
+			}
 		} else {
 			m.Mode = RepoModeList
 		}
+		return m, nil
+
 	case "enter":
+		// Save current input value to the struct
+		val := m.input.Value()
+
 		switch m.AddStep {
 		case 0:
-			if m.NewRepo.Name != "" {
-				m.AddStep = 1
+			if val == "" {
+				return m, nil
 			}
+			m.NewRepo.Name = val
 		case 1:
-			if m.NewRepo.URL != "" {
-				m.AddStep = 2
+			if val == "" {
+				return m, nil
 			}
+			m.NewRepo.URL = val
 		case 2:
-			if m.NewRepo.Branch != "" {
-				m.AddStep = 3
-			}
+			m.NewRepo.Branch = val
 		case 3:
 			m.NewRepo.BuildSystem = buildSystems[m.BuildCursor]
-			m.AddStep = 4
 		case 4:
-			m.AddStep = 5
+			m.NewRepo.BuildFile = val
 		case 5:
-			m.AddStep = 6
-		case 6:
+			m.NewRepo.Path = val
+		}
+
+		// Advance to next step
+		if m.AddStep < 6 {
+			m.AddStep++
+
+			// Prepare input for the next step
+			m.input.SetValue("")
+			switch m.AddStep {
+			case 1:
+				m.input.Placeholder = "https://github.com/user/repo.git"
+			case 2:
+				m.input.SetValue("main")
+			case 4:
+				m.input.Placeholder = "docker-compose.yml"
+			case 5:
+				m.input.Placeholder = "./"
+			}
+		} else {
 			m.Mode = RepoModeSelectAgent
 			m.AgentCursor = 0
 		}
-	case "backspace":
-		switch m.AddStep {
-		case 0:
-			if len(m.NewRepo.Name) > 0 {
-				m.NewRepo.Name = m.NewRepo.Name[:len(m.NewRepo.Name)-1]
-			}
-		case 1:
-			if len(m.NewRepo.URL) > 0 {
-				m.NewRepo.URL = m.NewRepo.URL[:len(m.NewRepo.URL)-1]
-			}
-		case 2:
-			if len(m.NewRepo.Branch) > 0 {
-				m.NewRepo.Branch = m.NewRepo.Branch[:len(m.NewRepo.Branch)-1]
-			}
-		case 4:
-			if len(m.NewRepo.BuildFile) > 0 {
-				m.NewRepo.BuildFile = m.NewRepo.BuildFile[:len(m.NewRepo.BuildFile)-1]
-			}
-		case 5:
-			if len(m.NewRepo.Path) > 0 {
-				m.NewRepo.Path = m.NewRepo.Path[:len(m.NewRepo.Path)-1]
-			}
+		return m, nil
+
+	// Special handling for Step 3 (Selection) and Step 6 (Toggle)
+	case "left", "h":
+		if m.AddStep == 3 && m.BuildCursor > 0 {
+			m.BuildCursor--
+		}
+	case "right", "l":
+		if m.AddStep == 3 && m.BuildCursor < len(buildSystems)-1 {
+			m.BuildCursor++
 		}
 	case "tab", " ":
 		if m.AddStep == 6 {
 			m.NewRepo.AutoDeploy = !m.NewRepo.AutoDeploy
 		}
-	case "left":
-		if m.AddStep == 3 && m.BuildCursor > 0 {
-			m.BuildCursor--
-		}
-	case "right":
-		if m.AddStep == 3 && m.BuildCursor < len(buildSystems)-1 {
-			m.BuildCursor++
-		}
-	default:
-		inputStr := msg.String()
-		if m.AddStep == 3 && (inputStr == "h" || inputStr == "l") {
-			if inputStr == "h" && m.BuildCursor > 0 {
-				m.BuildCursor--
-			} else if inputStr == "l" && m.BuildCursor < len(buildSystems)-1 {
-				m.BuildCursor++
-			}
-			return m, nil
-		}
-
-		if msg.Type == tea.KeyRunes {
-			if len(inputStr) > 0 {
-				switch m.AddStep {
-				case 0:
-					if len(m.NewRepo.Name)+len(inputStr) <= 30 {
-						m.NewRepo.Name += inputStr
-					}
-				case 1:
-					if len(m.NewRepo.URL)+len(inputStr) <= 150 {
-						m.NewRepo.URL += inputStr
-					}
-				case 2:
-					if len(m.NewRepo.Branch)+len(inputStr) <= 30 {
-						m.NewRepo.Branch += inputStr
-					}
-				case 4:
-					if len(m.NewRepo.BuildFile)+len(inputStr) <= 50 {
-						m.NewRepo.BuildFile += inputStr
-					}
-				case 5:
-					if len(m.NewRepo.Path)+len(inputStr) <= 100 {
-						m.NewRepo.Path += inputStr
-					}
-				}
-			}
-		}
 	}
-	return m, nil
+
+	// Pass key events to the text input only if we are on a text step
+	var cmd tea.Cmd
+	if !isSelectionStep {
+		m.input, cmd = m.input.Update(msg)
+	}
+	return m, cmd
 }
 
 func (m ReposModel) updateSelectAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -469,11 +484,14 @@ func (m ReposModel) viewAdd() string {
 	var formContent strings.Builder
 	for i, s := range steps {
 		if i < m.AddStep {
+			// Completed steps
 			formContent.WriteString("  " + styles.SuccessStyle.Render(styles.IconSuccess) + "  " +
 				styles.SubtleStyle.Render(s.label) + "  " + s.value + "\n")
 		} else if i == m.AddStep {
 			formContent.WriteString("\n")
+
 			if i == 3 {
+				// Selection Step
 				formContent.WriteString("  " + styles.SubtleStyle.Render(s.label) + "\n\n")
 				for j, bs := range buildSystems {
 					if j == m.BuildCursor {
@@ -484,15 +502,26 @@ func (m ReposModel) viewAdd() string {
 				}
 				formContent.WriteString("\n\n  " + styles.MutedStyle.Render("← → to select, enter to confirm"))
 			} else if i == 6 {
+				// Toggle Step
 				formContent.WriteString(components.Toggle(s.label, m.NewRepo.AutoDeploy, true) + "\n")
 				formContent.WriteString("\n  " + styles.MutedStyle.Render("Press space to toggle"))
-			} else if i == 4 {
-				formContent.WriteString(components.InputWithHint(s.label, s.value, "e.g. docker-compose.prod.yml", true, w-8))
 			} else {
-				formContent.WriteString(components.Input(s.label, s.value, true, w-8))
+				// Text Input Step
+				label := styles.SubtleStyle.Render(s.label)
+
+				// Render the input box using your style wrapper
+				inputView := styles.InputBoxFocused.Width(w - 8).Render(m.input.View())
+
+				hint := ""
+				if i == 4 {
+					hint = "\n  " + styles.MutedStyle.Render("e.g. docker-compose.prod.yml")
+				}
+
+				formContent.WriteString(fmt.Sprintf("  %s\n  %s%s", label, inputView, hint))
 			}
 		}
 	}
+
 	if m.err != nil {
 		formContent.WriteString("\n\n" + styles.ErrorStyle.Render(styles.IconError) + "  " + styles.ErrorStyle.Render(m.err.Error()))
 	}

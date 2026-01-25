@@ -240,13 +240,12 @@ func (m LogsModel) viewSelect() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("LOGS", w) + "\n\n")
-
-	b.WriteString(components.Section("SELECT DEPLOYMENT", w) + "\n\n")
+	b.WriteString(components.Header("DEPLOYMENT HISTORY", w) + "\n\n")
+	b.WriteString(components.Section("PAST DEPLOYMENTS", w) + "\n\n")
 
 	var listContent strings.Builder
 	if len(m.Deployments) == 0 {
-		listContent.WriteString("  " + styles.MutedStyle.Render("No deployments found") + "\n")
+		listContent.WriteString("  " + styles.MutedStyle.Render("No history found") + "\n")
 		listContent.WriteString("  " + styles.SubtleStyle.Render("Deploy a repository first"))
 	} else {
 		for i, d := range m.Deployments {
@@ -300,7 +299,7 @@ func (m LogsModel) viewLogs() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("LOGS", w) + "\n\n")
+	b.WriteString(components.Header("DEPLOYMENT LOGS", w) + "\n\n")
 
 	title := m.Repo
 	if title == "" {

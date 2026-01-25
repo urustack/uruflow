@@ -434,8 +434,12 @@ func (d *Daemon) handleDeploy(cmd protocol.CommandPayload) {
 		return
 	}
 
+	commitShort := deployPayload.Commit
+	if len(commitShort) > 7 {
+		commitShort = commitShort[:7]
+	}
 	logger.Info("[AGENT] starting deployment: repo=%s branch=%s commit=%s build_system=%s",
-		deployPayload.Name, deployPayload.Branch, deployPayload.Commit[:7], deployPayload.BuildSystem)
+		deployPayload.Name, deployPayload.Branch, commitShort, deployPayload.BuildSystem)
 
 	startMsg, _ := protocol.NewMessage(protocol.TypeCommandStart, protocol.CommandStartPayload{
 		CommandID: cmd.ID,

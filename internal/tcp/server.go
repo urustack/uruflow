@@ -312,11 +312,19 @@ func (s *Server) handleMetrics(conn *Connection, msg *protocol.Message) {
 		LoadAvg:       metrics.System.LoadAvg,
 		Uptime:        metrics.System.Uptime,
 	}
-
 	s.store.UpdateAgentMetrics(conn.AgentID, agentMetrics)
 
 	if s.onMetrics != nil {
 		s.onMetrics(conn.AgentID, agentMetrics)
+	}
+
+	activeAlerts, _ := s.store.GetActiveAlerts()
+
+	activeAlertMap := make(map[string]bool)
+	for _, a := range activeAlerts {
+		if a.AgentID == conn.AgentID && a.Resolved == false {
+			activeAlertMap[a.Message] = true
+		}
 	}
 
 	for _, c := range metrics.Containers {
@@ -337,22 +345,32 @@ func (s *Server) handleMetrics(conn *Connection, msg *protocol.Message) {
 		}
 		s.store.UpsertContainer(container)
 
-		if c.Status != "running" {
-			if alert := logic.CheckContainerDown(conn.AgentID, conn.AgentName, c.Name); alert != nil {
-				s.store.CreateAlert(alert)
+		if c.Status != "running" &&
+			c.Status != "created" &&
+			c.Status != "starting" &&
+			c.Status != "restarting" {
+
+			potentialAlert := logic.CheckContainerDown(conn.AgentID, conn.AgentName, c.Name)
+
+			if potentialAlert != nil {
+				if !activeAlertMap[potentialAlert.Message] {
+					s.store.CreateAlert(potentialAlert)
+					activeAlertMap[potentialAlert.Message] = true
+				}
 			}
 		}
 	}
 
-	if alert := logic.CheckCPU(conn.AgentID, conn.AgentName, metrics.System.CPUPercent); alert != nil {
-		s.store.CreateAlert(alert)
+	createIfNotExists := func(alert *models.Alert) {
+		if alert != nil && !activeAlertMap[alert.Message] {
+			s.store.CreateAlert(alert)
+			activeAlertMap[alert.Message] = true
+		}
 	}
-	if alert := logic.CheckMemory(conn.AgentID, conn.AgentName, metrics.System.MemoryPercent); alert != nil {
-		s.store.CreateAlert(alert)
-	}
-	if alert := logic.CheckDisk(conn.AgentID, conn.AgentName, metrics.System.DiskPercent); alert != nil {
-		s.store.CreateAlert(alert)
-	}
+
+	createIfNotExists(logic.CheckCPU(conn.AgentID, conn.AgentName, metrics.System.CPUPercent))
+	createIfNotExists(logic.CheckMemory(conn.AgentID, conn.AgentName, metrics.System.MemoryPercent))
+	createIfNotExists(logic.CheckDisk(conn.AgentID, conn.AgentName, metrics.System.DiskPercent))
 
 	conn.Send(&protocol.Message{Type: protocol.TypeMetricsAck})
 }

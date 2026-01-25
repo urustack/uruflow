@@ -21,7 +21,6 @@ package tcp
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -32,6 +31,7 @@ import (
 	"github.com/urustack/uruflow/internal/storage"
 	"github.com/urustack/uruflow/internal/tcp/protocol"
 	"github.com/urustack/uruflow/pkg/helper"
+	"github.com/urustack/uruflow/pkg/logger"
 )
 
 const (
@@ -84,13 +84,13 @@ func (s *Server) Start() error {
 		if err != nil {
 			return fmt.Errorf("tls listen: %w", err)
 		}
-		log.Printf("[TCP] server listening on %s (TLS)", addr)
+		logger.Info("[TCP] server listening on %s (TLS)", addr)
 	} else {
 		listener, err = net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("tcp listen: %w", err)
 		}
-		log.Printf("[TCP] server listening on %s", addr)
+		logger.Info("[TCP] server listening on %s", addr)
 	}
 
 	s.listener = listener
@@ -130,7 +130,7 @@ func (s *Server) listenAutoTLS(addr string) (net.Listener, error) {
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	log.Printf("[TCP] using auto-generated self-signed certificate")
+	logger.Info("[TCP] using auto-generated self-signed certificate")
 	return tls.Listen("tcp", addr, tlsConfig)
 }
 
@@ -160,7 +160,7 @@ func (s *Server) acceptRequests() {
 				case <-s.done:
 					return
 				default:
-					log.Printf("[TCP] accept error: %v", err)
+					logger.Error("[TCP] accept error: %v", err)
 					continue
 				}
 			}
@@ -175,7 +175,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 
 	agentID, err := s.authenticate(conn)
 	if err != nil {
-		log.Printf("[TCP] auth failed for %s: %v", conn.RemoteAddr(), err)
+		logger.Warn("[TCP] auth failed for %s: %v", conn.RemoteAddr(), err)
 		conn.Close()
 		return
 	}
@@ -183,7 +183,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 	s.addConnection(agentID, conn)
 	defer s.removeConnection(agentID)
 
-	log.Printf("[TCP] agent %s connected", conn.AgentName)
+	logger.Info("[TCP] agent %s connected", conn.AgentName)
 	s.handleMessages(conn)
 }
 
@@ -390,7 +390,7 @@ func (s *Server) handleCommandAck(conn *Connection, msg *protocol.Message) {
 		s.store.UpdateDeployment(deploy)
 	}
 
-	log.Printf("[TCP] agent %s acknowledged command %s", conn.AgentName, ack.CommandID)
+	logger.Info("[TCP] agent %s acknowledged command %s", conn.AgentName, ack.CommandID)
 }
 
 func (s *Server) handleCommandStart(conn *Connection, msg *protocol.Message) {
@@ -404,7 +404,7 @@ func (s *Server) handleCommandStart(conn *Connection, msg *protocol.Message) {
 		deploy.Status = models.DeployRunning
 		s.store.UpdateDeployment(deploy)
 	}
-	log.Printf("[TCP] agent %s started deployment %s", conn.AgentName, start.CommandID)
+	logger.Info("[TCP] agent %s started deployment %s", conn.AgentName, start.CommandID)
 }
 
 func (s *Server) handleCommandLog(conn *Connection, msg *protocol.Message) {
@@ -469,7 +469,7 @@ func (s *Server) handleCommandDone(conn *Connection, msg *protocol.Message) {
 		}
 	}
 
-	log.Printf("[TCP] agent %s completed deployment %s: %s", conn.AgentName, done.CommandID, done.Status)
+	logger.Info("[TCP] agent %s completed deployment %s: %s", conn.AgentName, done.CommandID, done.Status)
 }
 
 func (s *Server) pingService() {
@@ -495,7 +495,7 @@ func (s *Server) pingAll() {
 
 	for _, conn := range conns {
 		if time.Since(conn.LastPing) > PongTimeout {
-			log.Printf("[TCP] agent %s ping timeout, disconnecting", conn.AgentName)
+			logger.Warn("[TCP] agent %s ping timeout, disconnecting", conn.AgentName)
 			s.removeConnection(conn.AgentID)
 			continue
 		}
@@ -525,7 +525,7 @@ func (s *Server) removeConnection(agentID string) {
 			s.store.CreateAlert(alert)
 		}
 
-		log.Printf("[TCP] agent %s disconnected", conn.AgentName)
+		logger.Warn("[TCP] agent %s disconnected", conn.AgentName)
 	}
 }
 

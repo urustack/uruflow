@@ -27,6 +27,7 @@ import (
 	"github.com/urustack/uruflow/internal/storage"
 	"github.com/urustack/uruflow/internal/tcp"
 	"github.com/urustack/uruflow/pkg/helper"
+	"github.com/urustack/uruflow/pkg/logger"
 )
 
 type DeploymentService struct {
@@ -44,13 +45,17 @@ func NewDeploymentService(cfg *config.Config, store storage.Store, tcpServer *tc
 }
 
 func (s *DeploymentService) TriggerDeploy(agentID, repoName, branch, commit, trigger string) (*models.Deployment, error) {
+	logger.Debug("[DEPLOY] Checking agent %s connection status", agentID)
+
 	if !s.tcpServer.IsAgentConnected(agentID) {
-		return nil, ErrAgentNotConnected
+		logger.Warn("[DEPLOY] Agent %s is offline, cannot deploy", agentID)
+		return nil, fmt.Errorf("agent %s is not connected: %w", agentID, ErrAgentNotConnected)
 	}
 
 	repo := s.cfg.GetRepository(repoName)
 	if repo == nil {
-		return nil, ErrRepoNotFound
+		logger.Error("[DEPLOY] Repository %s not found in config", repoName)
+		return nil, fmt.Errorf("repository %s: %w", repoName, ErrRepoNotFound)
 	}
 
 	agent, err := s.store.GetAgent(agentID)
@@ -71,8 +76,12 @@ func (s *DeploymentService) TriggerDeploy(agentID, repoName, branch, commit, tri
 		Trigger:    trigger,
 	}
 
+	logger.Info("[DEPLOY] Creating deployment: id=%s repo=%s branch=%s agent=%s trigger=%s",
+		deploy.ID, repoName, branch, agentName, trigger)
+
 	if err := s.store.CreateDeployment(deploy); err != nil {
-		return nil, err
+		logger.Error("[DEPLOY] Failed to create deployment record: %v", err)
+		return nil, fmt.Errorf("create deployment: %w", err)
 	}
 
 	cmd := &models.Command{
@@ -91,15 +100,24 @@ func (s *DeploymentService) TriggerDeploy(agentID, repoName, branch, commit, tri
 		},
 	}
 
+	logger.Debug("[DEPLOY] Sending command to agent %s: type=%s build_system=%s",
+		agentID, cmd.Type, repo.BuildSystem)
+
 	if err := s.tcpServer.SendCommand(agentID, cmd); err != nil {
+		logger.Error("[DEPLOY] Failed to send command to agent %s: %v", agentID, err)
+
 		deploy.Status = models.DeployFailed
 		deploy.Output = fmt.Sprintf("Failed to send command: %v", err)
 		deploy.EndedAt = &deploy.StartedAt
 
-		_ = s.store.UpdateDeployment(deploy)
-		return nil, err
+		if updateErr := s.store.UpdateDeployment(deploy); updateErr != nil {
+			logger.Error("[DEPLOY] Failed to update deployment status: %v", updateErr)
+		}
+
+		return nil, fmt.Errorf("send command to agent %s: %w", agentID, err)
 	}
 
+	logger.Info("[DEPLOY] Command sent successfully: deployment_id=%s", deploy.ID)
 	return deploy, nil
 }
 

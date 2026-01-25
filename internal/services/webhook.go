@@ -15,7 +15,6 @@
  * You should have received a copy of the MIT License
  * along with uruflow. If not, see the LICENSE file in the project root.
  */
-
 package services
 
 import (
@@ -28,6 +27,7 @@ import (
 
 	"github.com/urustack/uruflow/internal/config"
 	"github.com/urustack/uruflow/internal/models"
+	"github.com/urustack/uruflow/pkg/logger"
 )
 
 type WebhookService struct {
@@ -71,6 +71,7 @@ type GitLabPushPayload struct {
 
 func (s *WebhookService) ValidateGitHubSignature(payload []byte, signature string) bool {
 	if s.cfg.Webhook.Secret == "" {
+		logger.Warn("[WEBHOOK] No webhook secret configured, accepting unsigned requests")
 		return true
 	}
 	if !strings.HasPrefix(signature, "sha256=") {
@@ -85,6 +86,7 @@ func (s *WebhookService) ValidateGitHubSignature(payload []byte, signature strin
 
 func (s *WebhookService) ValidateGitLabToken(token string) bool {
 	if s.cfg.Webhook.Secret == "" {
+		logger.Warn("[WEBHOOK] No webhook secret configured, accepting unsigned requests")
 		return true
 	}
 	return token == s.cfg.Webhook.Secret
@@ -93,31 +95,38 @@ func (s *WebhookService) ValidateGitLabToken(token string) bool {
 func (s *WebhookService) ProcessGitHubPush(payload []byte) (*WebhookResult, error) {
 	var data GitHubPushPayload
 	if err := json.Unmarshal(payload, &data); err != nil {
-		return nil, fmt.Errorf("invalid payload")
+		return nil, fmt.Errorf("failed to parse GitHub payload: %w", err)
 	}
 
 	branch := extractBranch(data.Ref)
 	if branch == "" {
-		return nil, fmt.Errorf("invalid ref")
+		return nil, fmt.Errorf("invalid git ref format: %s", data.Ref)
 	}
 
 	repoName := data.Repository.Name
+	logger.Debug("[WEBHOOK] GitHub push: repo=%s branch=%s commit=%s",
+		repoName, branch, data.HeadCommit.ID[:7])
+
 	repo := s.cfg.GetRepository(repoName)
 	if repo == nil {
-		return nil, ErrRepoNotFound
+		return nil, fmt.Errorf("repository '%s' not configured in uruflow - add it first", repoName)
 	}
 
 	if repo.Branch != branch {
-		return nil, ErrBranchNotConfigured
+		return nil, fmt.Errorf("branch '%s' not configured for auto-deploy (configured branch: '%s')",
+			branch, repo.Branch)
 	}
 
 	if !repo.AutoDeploy {
-		return nil, ErrAutoDeployDisabled
+		return nil, fmt.Errorf("auto-deploy is disabled for repository '%s'", repoName)
 	}
+
+	logger.Info("[WEBHOOK] Triggering deployment: repo=%s branch=%s agent=%s",
+		repoName, branch, repo.AgentID)
 
 	deploy, err := s.deployService.TriggerDeploy(repo.AgentID, repoName, branch, data.HeadCommit.ID, "webhook")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("trigger deployment failed: %w", err)
 	}
 
 	return &WebhookResult{
@@ -131,36 +140,43 @@ func (s *WebhookService) ProcessGitHubPush(payload []byte) (*WebhookResult, erro
 func (s *WebhookService) ProcessGitLabPush(payload []byte) (*WebhookResult, error) {
 	var data GitLabPushPayload
 	if err := json.Unmarshal(payload, &data); err != nil {
-		return nil, fmt.Errorf("invalid payload")
+		return nil, fmt.Errorf("failed to parse GitLab payload: %w", err)
 	}
 
 	branch := extractBranch(data.Ref)
 	if branch == "" {
-		return nil, fmt.Errorf("invalid ref")
+		return nil, fmt.Errorf("invalid git ref format: %s", data.Ref)
 	}
 
 	repoName := data.Project.Name
-	repo := s.cfg.GetRepository(repoName)
-	if repo == nil {
-		return nil, ErrRepoNotFound
-	}
-
-	if repo.Branch != branch {
-		return nil, ErrBranchNotConfigured
-	}
-
-	if !repo.AutoDeploy {
-		return nil, ErrAutoDeployDisabled
-	}
-
 	commitID := ""
 	if len(data.Commits) > 0 {
 		commitID = data.Commits[0].ID
 	}
 
+	logger.Debug("[WEBHOOK] GitLab push: repo=%s branch=%s commit=%s",
+		repoName, branch, commitID[:7])
+
+	repo := s.cfg.GetRepository(repoName)
+	if repo == nil {
+		return nil, fmt.Errorf("repository '%s' not configured in uruflow - add it first", repoName)
+	}
+
+	if repo.Branch != branch {
+		return nil, fmt.Errorf("branch '%s' not configured for auto-deploy (configured branch: '%s')",
+			branch, repo.Branch)
+	}
+
+	if !repo.AutoDeploy {
+		return nil, fmt.Errorf("auto-deploy is disabled for repository '%s'", repoName)
+	}
+
+	logger.Info("[WEBHOOK] Triggering deployment: repo=%s branch=%s agent=%s",
+		repoName, branch, repo.AgentID)
+
 	deploy, err := s.deployService.TriggerDeploy(repo.AgentID, repoName, branch, commitID, "webhook")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("trigger deployment failed: %w", err)
 	}
 
 	return &WebhookResult{

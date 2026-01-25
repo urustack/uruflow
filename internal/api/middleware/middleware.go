@@ -19,7 +19,7 @@
 package middleware
 
 import (
-	"log"
+	"github.com/urustack/uruflow/pkg/logger"
 	"net/http"
 	"time"
 )
@@ -31,7 +31,7 @@ func Logging(next http.Handler) http.Handler {
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 
-		log.Printf("[HTTP] %s %s %d %v",
+		logger.Info("[HTTP] %s %s %d %v",
 			r.Method,
 			r.URL.Path,
 			wrapped.statusCode,
@@ -44,7 +44,7 @@ func Recovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("[HTTP] panic: %v", err)
+				logger.Error("[HTTP] panic: %v", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()

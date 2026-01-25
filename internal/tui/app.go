@@ -20,6 +20,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"log"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,13 +30,7 @@ import (
 )
 
 func Run(store storage.Store, cfg *config.Config, server *api.Server) error {
-	f, err := tea.LogToFile("uruflow-server.log", "debug")
-	if err != nil {
-		return fmt.Errorf("fatal: could not open log file: %w", err)
-	}
-	defer f.Close()
-
-	log.SetOutput(f)
+	log.SetOutput(io.Discard)
 
 	cfgPath := config.DefaultConfigPath
 	model := NewModel(store, cfg, cfgPath, server)
@@ -49,12 +44,7 @@ func Run(store storage.Store, cfg *config.Config, server *api.Server) error {
 }
 
 func RunInit() error {
-	f, err := tea.LogToFile("uruflow-server-init.log", "debug")
-	if err != nil {
-		return fmt.Errorf("fatal: could not open init log file: %w", err)
-	}
-	defer f.Close()
-	log.SetOutput(f)
+	log.SetOutput(io.Discard)
 
 	model := NewInitModel()
 	p := tea.NewProgram(&model, tea.WithAltScreen())

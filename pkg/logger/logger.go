@@ -25,9 +25,9 @@ var levelNames = map[Level]string{
 }
 
 type Logger struct {
-	level  Level
-	output io.Writer
-	prefix string
+	level      Level
+	fileOutput io.Writer
+	prefix     string
 }
 
 var std *Logger
@@ -45,9 +45,9 @@ func Init(logPath string, level string) error {
 
 	if logPath == "" {
 		std = &Logger{
-			level:  logLevel,
-			output: os.Stdout,
-			prefix: "[URUFLOW] ",
+			level:      logLevel,
+			fileOutput: os.Stdout,
+			prefix:     "[URUFLOW] ",
 		}
 		return nil
 	}
@@ -62,9 +62,9 @@ func Init(logPath string, level string) error {
 	}
 
 	std = &Logger{
-		level:  logLevel,
-		output: io.MultiWriter(os.Stdout, file),
-		prefix: "[URUFLOW] ",
+		level:      logLevel,
+		fileOutput: file,
+		prefix:     "[URUFLOW] ",
 	}
 
 	return nil
@@ -78,8 +78,7 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	levelStr := levelNames[level]
 	message := fmt.Sprintf(format, args...)
-
-	fmt.Fprintf(l.output, "%s %s %s%s\n", timestamp, levelStr, l.prefix, message)
+	fmt.Fprintf(l.fileOutput, "%s %-5s %s%s\n", timestamp, levelStr, l.prefix, message)
 }
 
 func Debug(format string, args ...interface{}) {
@@ -111,8 +110,8 @@ func With(prefix string) *Logger {
 		return nil
 	}
 	return &Logger{
-		level:  std.level,
-		output: std.output,
-		prefix: fmt.Sprintf("%s[%s] ", std.prefix, prefix),
+		level:      std.level,
+		fileOutput: std.fileOutput,
+		prefix:     fmt.Sprintf("%s[%s] ", std.prefix, prefix),
 	}
 }

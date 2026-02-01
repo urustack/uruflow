@@ -57,7 +57,6 @@ var (
 	BoxSelected = lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(Primary).
-			Background(Surface).
 			Padding(1, 2)
 
 	BoxFocused = lipgloss.NewStyle().
@@ -66,7 +65,8 @@ var (
 			Padding(1, 2)
 
 	RowSelected = lipgloss.NewStyle().
-			Background(Surface).
+			Foreground(Primary).
+			Bold(true).
 			Padding(0, 1)
 
 	BoxSuccess = lipgloss.NewStyle().

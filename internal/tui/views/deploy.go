@@ -111,7 +111,7 @@ func (m DeployModel) View() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("DEPLOYMENT", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Deployment") + "\n\n")
 
 	if m.Deployment.ID == "" {
 		b.WriteString(components.Section("STATUS", w) + "\n\n")

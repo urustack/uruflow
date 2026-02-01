@@ -145,6 +145,23 @@ type ErrorPayload struct {
 	Message string `json:"message"`
 }
 
+type ContainerLogsRequestPayload struct {
+	ContainerID string `json:"container_id"`
+	Tail        int    `json:"tail"`
+	Follow      bool   `json:"follow"`
+}
+
+type ContainerLogsDataPayload struct {
+	ContainerID string `json:"container_id"`
+	Line        string `json:"line"`
+	Stream      string `json:"stream"`
+	Timestamp   int64  `json:"timestamp"`
+}
+
+type ContainerLogsStopPayload struct {
+	ContainerID string `json:"container_id"`
+}
+
 func Ping() *Message {
 	return &Message{Type: TypePing}
 }

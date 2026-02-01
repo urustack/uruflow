@@ -22,7 +22,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/urustack/uruflow/internal/api/middleware"
-	"log"
 	"net/http"
 	"time"
 
@@ -32,6 +31,7 @@ import (
 	"github.com/urustack/uruflow/internal/services"
 	"github.com/urustack/uruflow/internal/storage"
 	"github.com/urustack/uruflow/internal/tcp"
+	"github.com/urustack/uruflow/pkg/logger"
 )
 
 type Server struct {
@@ -71,11 +71,11 @@ func (s *Server) Start() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("[HTTP] Webhook listener on %s:%d", s.cfg.Server.Host, s.cfg.Server.HTTPPort)
+	logger.Info("[HTTP] Webhook listener on %s:%d", s.cfg.Server.Host, s.cfg.Server.HTTPPort)
 
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[HTTP] Error: %v", err)
+			logger.Error("[HTTP] Error: %v", err)
 		}
 	}()
 

@@ -48,7 +48,7 @@ func WrapWarning(content string, w int) string {
 
 func Header(title string, w int) string {
 	left := styles.LogoCompact()
-	right := styles.MutedStyle.Render("v2.0.0")
+	right := styles.MutedStyle.Render("v1.1.0")
 	if title != "" {
 		right = styles.HeaderStyle.Render(title)
 	}
@@ -59,6 +59,38 @@ func Header(title string, w int) string {
 		gap = 1
 	}
 	return "  " + left + strings.Repeat(" ", gap) + right + "  "
+}
+
+func StatusBar(online, offline, alerts int, w int) string {
+	var parts []string
+
+	if online > 0 {
+		parts = append(parts, styles.SuccessStyle.Render(fmt.Sprintf("%d online", online)))
+	}
+
+	if offline > 0 {
+		parts = append(parts, styles.MutedStyle.Render(fmt.Sprintf("%d offline", offline)))
+	}
+
+	if alerts > 0 {
+		parts = append(parts, styles.WarningStyle.Render(fmt.Sprintf("%d alerts", alerts)))
+	} else {
+		parts = append(parts, styles.SuccessStyle.Render(styles.IconSuccess+" healthy"))
+	}
+
+	content := strings.Join(parts, "    ")
+	return "  " + content
+}
+
+func WrapFocused(content string, w int) string {
+	return styles.BoxFocused.Width(w - 4).Render(content)
+}
+
+func SelectedRow(content string, selected bool) string {
+	if selected {
+		return styles.RowSelected.Render(content)
+	}
+	return content
 }
 
 func Section(title string, w int) string {

@@ -21,8 +21,6 @@ package services
 import "errors"
 
 var (
-	ErrAgentNotConnected   = errors.New("agent not connected")
-	ErrRepoNotFound        = errors.New("repository not found")
-	ErrBranchNotConfigured = errors.New("branch not configured for auto-deploy")
-	ErrAutoDeployDisabled  = errors.New("auto-deploy disabled for repository")
+	ErrAgentNotConnected = errors.New("agent not connected")
+	ErrRepoNotFound      = errors.New("repository not found")
 )

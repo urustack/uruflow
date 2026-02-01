@@ -15,27 +15,38 @@
  * You should have received a copy of the MIT License
  * along with uruflow. If not, see the LICENSE file in the project root.
  */
-package main
+
+package components
 
 import (
-	"fmt"
-	"os"
+	"strings"
 
-	"github.com/urustack/uruflow/internal/cli"
-	"github.com/urustack/uruflow/pkg/logger"
+	"github.com/urustack/uruflow/internal/tui/styles"
 )
 
-func main() {
-	if err := logger.Init("/var/log/uruflow-server.log", "info"); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
-		os.Exit(1)
+func Breadcrumb(items ...string) string {
+	if len(items) == 0 {
+		return ""
 	}
 
-	logger.Info("Starting UruFlow Server")
-
-	if err := cli.Execute(); err != nil {
-		logger.Error("Fatal error: %v", err)
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	var parts []string
+	for i, item := range items {
+		if i == len(items)-1 {
+			parts = append(parts, styles.PrimaryStyle.Render(item))
+		} else {
+			parts = append(parts, styles.MutedStyle.Render(item))
+		}
 	}
+
+	return strings.Join(parts, styles.BreadcrumbSep())
+}
+
+func ViewHeader(w int, crumbs ...string) string {
+	logo := styles.LogoInline()
+	breadcrumb := Breadcrumb(crumbs...)
+
+	if breadcrumb != "" {
+		return "  " + logo + "   " + breadcrumb
+	}
+	return "  " + logo
 }

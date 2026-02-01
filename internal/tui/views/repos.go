@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/urustack/uruflow/internal/config"
 	"github.com/urustack/uruflow/internal/models"
@@ -39,6 +40,18 @@ const (
 	RepoModeList RepoMode = iota
 	RepoModeAdd
 	RepoModeSelectAgent
+	RepoModeConfirmDelete
+)
+
+const (
+	RepoStepName       = 0
+	RepoStepURL        = 1
+	RepoStepBranch     = 2
+	RepoStepBuild      = 3
+	RepoStepBuildFile  = 4
+	RepoStepPath       = 5
+	RepoStepAutoDeploy = 6
+	RepoStepTotal      = 7
 )
 
 var buildSystems = []string{"compose", "dockerfile", "makefile"}
@@ -65,7 +78,12 @@ type ReposModel struct {
 	NewRepo       NewRepoData
 	AgentCursor   int
 	BuildCursor   int
-	err           error
+	Dialog        components.Dialog
+	Loading       bool
+	SpinnerFrame  int
+	input         textinput.Model
+
+	err error
 }
 
 type NewRepoData struct {
@@ -81,17 +99,26 @@ type NewRepoData struct {
 }
 
 func NewReposModel(store storage.Store, cfg *config.Config, cfgPath string, deployService *services.DeploymentService) ReposModel {
+	ti := textinput.New()
+	ti.Cursor.Style = styles.PrimaryStyle
+	ti.CharLimit = 150
+	ti.Focus()
+
 	return ReposModel{
 		store: store, cfg: cfg, cfgPath: cfgPath, deployService: deployService,
-		Mode: RepoModeList, NewRepo: NewRepoData{Branch: "main", AutoDeploy: true, BuildSystem: "compose"},
+		Mode:    RepoModeList,
+		NewRepo: NewRepoData{Branch: "main", AutoDeploy: true, BuildSystem: "compose"},
+		input:   ti,
 	}
 }
 
 func (m ReposModel) Init() tea.Cmd {
-	return tea.Batch(m.fetchRepos, m.fetchAgents)
+	return tea.Batch(m.fetchRepos, m.fetchAgents, textinput.Blink)
 }
 
 func (m ReposModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch m.Mode {
@@ -101,6 +128,13 @@ func (m ReposModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAdd(msg)
 		case RepoModeSelectAgent:
 			return m.updateSelectAgent(msg)
+		case RepoModeConfirmDelete:
+			return m.updateConfirmDelete(msg)
+		}
+	case SpinnerTickMsg:
+		m.SpinnerFrame++
+		if m.Loading {
+			return m, m.spinnerTick
 		}
 	case RepoResultMsg:
 		if msg.Success {
@@ -109,16 +143,56 @@ func (m ReposModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = msg.Error
 		}
+		m.Loading = false
 		return m, m.fetchRepos
 	case []RepoData:
 		m.Repos = msg
+		m.Loading = false
 		return m, nil
 	case []AgentData:
 		m.Agents = msg
 		return m, nil
 	case error:
 		m.err = msg
+		m.Loading = false
 		return m, nil
+	}
+
+	if m.Mode == RepoModeAdd {
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+
+	return m, nil
+}
+
+func (m ReposModel) spinnerTick() tea.Msg {
+	time.Sleep(80 * time.Millisecond)
+	return SpinnerTickMsg{}
+}
+
+func (m ReposModel) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n":
+		m.Mode = RepoModeList
+		m.Dialog.Visible = false
+	case "left", "right", "h", "l", "tab":
+		m.Dialog.ToggleSelection()
+	case "enter":
+		if m.Dialog.IsConfirmed() {
+			m.Dialog.Visible = false
+			m.Mode = RepoModeList
+			m.Loading = true
+			return m, tea.Batch(m.deleteRepo(m.Repos[m.Cursor].Name), m.spinnerTick)
+		} else {
+			m.Mode = RepoModeList
+			m.Dialog.Visible = false
+		}
+	case "y":
+		m.Dialog.Visible = false
+		m.Mode = RepoModeList
+		m.Loading = true
+		return m, tea.Batch(m.deleteRepo(m.Repos[m.Cursor].Name), m.spinnerTick)
 	}
 	return m, nil
 }
@@ -143,12 +217,19 @@ func (m ReposModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.NewRepo = NewRepoData{Branch: "main", AutoDeploy: true, BuildSystem: "compose"}
 		m.BuildCursor = 0
 		m.err = nil
+		m.input.SetValue("")
+		m.input.Placeholder = "my-service"
+		m.input.Focus()
+		return m, textinput.Blink
+
 	case "-", "delete", "backspace":
 		if len(m.Repos) > 0 {
-			return m, m.deleteRepo(m.Repos[m.Cursor].Name)
+			m.Dialog = components.DeleteRepoDialog(m.Repos[m.Cursor].Name)
+			m.Mode = RepoModeConfirmDelete
 		}
 	case "r":
-		return m, m.fetchRepos
+		m.Loading = true
+		return m, tea.Batch(m.fetchRepos, m.spinnerTick)
 	case "e":
 		m.Expanded = !m.Expanded
 	}
@@ -156,112 +237,90 @@ func (m ReposModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m ReposModel) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	isSelectionStep := (m.AddStep == 3 || m.AddStep == 6)
+
 	switch msg.String() {
 	case "esc":
 		if m.AddStep > 0 {
 			m.AddStep--
+			switch m.AddStep {
+			case 0:
+				m.input.SetValue(m.NewRepo.Name)
+			case 1:
+				m.input.SetValue(m.NewRepo.URL)
+			case 2:
+				m.input.SetValue(m.NewRepo.Branch)
+			case 4:
+				m.input.SetValue(m.NewRepo.BuildFile)
+			case 5:
+				m.input.SetValue(m.NewRepo.Path)
+			}
 		} else {
 			m.Mode = RepoModeList
 		}
+		return m, nil
+
 	case "enter":
+		val := m.input.Value()
 		switch m.AddStep {
-		case 0:
-			if m.NewRepo.Name != "" {
-				m.AddStep = 1
+		case RepoStepName:
+			if val == "" {
+				return m, nil
 			}
-		case 1:
-			if m.NewRepo.URL != "" {
-				m.AddStep = 2
+			m.NewRepo.Name = val
+		case RepoStepURL:
+			if val == "" {
+				return m, nil
 			}
-		case 2:
-			if m.NewRepo.Branch != "" {
-				m.AddStep = 3
-			}
-		case 3:
+			m.NewRepo.URL = val
+		case RepoStepBranch:
+			m.NewRepo.Branch = val
+		case RepoStepBuild:
 			m.NewRepo.BuildSystem = buildSystems[m.BuildCursor]
-			m.AddStep = 4
-		case 4:
-			m.AddStep = 5
-		case 5:
-			m.AddStep = 6
-		case 6:
+		case RepoStepBuildFile:
+			m.NewRepo.BuildFile = val
+		case RepoStepPath:
+			m.NewRepo.Path = val
+		}
+
+		if m.AddStep < RepoStepAutoDeploy {
+			m.AddStep++
+			m.input.SetValue("")
+			switch m.AddStep {
+			case RepoStepURL:
+				m.input.Placeholder = "https://github.com/user/repo.git"
+			case RepoStepBranch:
+				m.input.SetValue("main")
+			case RepoStepBuildFile:
+				m.input.Placeholder = "docker-compose.yml"
+			case RepoStepPath:
+				m.input.Placeholder = "./"
+			}
+		} else {
 			m.Mode = RepoModeSelectAgent
 			m.AgentCursor = 0
 		}
-	case "backspace":
-		switch m.AddStep {
-		case 0:
-			if len(m.NewRepo.Name) > 0 {
-				m.NewRepo.Name = m.NewRepo.Name[:len(m.NewRepo.Name)-1]
-			}
-		case 1:
-			if len(m.NewRepo.URL) > 0 {
-				m.NewRepo.URL = m.NewRepo.URL[:len(m.NewRepo.URL)-1]
-			}
-		case 2:
-			if len(m.NewRepo.Branch) > 0 {
-				m.NewRepo.Branch = m.NewRepo.Branch[:len(m.NewRepo.Branch)-1]
-			}
-		case 4:
-			if len(m.NewRepo.BuildFile) > 0 {
-				m.NewRepo.BuildFile = m.NewRepo.BuildFile[:len(m.NewRepo.BuildFile)-1]
-			}
-		case 5:
-			if len(m.NewRepo.Path) > 0 {
-				m.NewRepo.Path = m.NewRepo.Path[:len(m.NewRepo.Path)-1]
-			}
-		}
-	case "tab", " ":
-		if m.AddStep == 6 {
-			m.NewRepo.AutoDeploy = !m.NewRepo.AutoDeploy
-		}
-	case "left":
-		if m.AddStep == 3 && m.BuildCursor > 0 {
+		return m, nil
+
+	case "left", "h":
+		if m.AddStep == RepoStepBuild && m.BuildCursor > 0 {
 			m.BuildCursor--
 		}
-	case "right":
-		if m.AddStep == 3 && m.BuildCursor < len(buildSystems)-1 {
+	case "right", "l":
+		if m.AddStep == RepoStepBuild && m.BuildCursor < len(buildSystems)-1 {
 			m.BuildCursor++
 		}
-	default:
-		inputStr := msg.String()
-		if m.AddStep == 3 && (inputStr == "h" || inputStr == "l") {
-			if inputStr == "h" && m.BuildCursor > 0 {
-				m.BuildCursor--
-			} else if inputStr == "l" && m.BuildCursor < len(buildSystems)-1 {
-				m.BuildCursor++
-			}
-			return m, nil
-		}
-
-		if msg.Type == tea.KeyRunes {
-			if len(inputStr) > 0 {
-				switch m.AddStep {
-				case 0:
-					if len(m.NewRepo.Name)+len(inputStr) <= 30 {
-						m.NewRepo.Name += inputStr
-					}
-				case 1:
-					if len(m.NewRepo.URL)+len(inputStr) <= 150 {
-						m.NewRepo.URL += inputStr
-					}
-				case 2:
-					if len(m.NewRepo.Branch)+len(inputStr) <= 30 {
-						m.NewRepo.Branch += inputStr
-					}
-				case 4:
-					if len(m.NewRepo.BuildFile)+len(inputStr) <= 50 {
-						m.NewRepo.BuildFile += inputStr
-					}
-				case 5:
-					if len(m.NewRepo.Path)+len(inputStr) <= 100 {
-						m.NewRepo.Path += inputStr
-					}
-				}
-			}
+	case "tab", " ":
+		if m.AddStep == RepoStepAutoDeploy {
+			m.NewRepo.AutoDeploy = !m.NewRepo.AutoDeploy
 		}
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	if !isSelectionStep {
+		m.input, cmd = m.input.Update(msg)
+	}
+	return m, cmd
 }
 
 func (m ReposModel) updateSelectAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -382,6 +441,8 @@ func (m ReposModel) View() string {
 		return m.viewAdd()
 	case RepoModeSelectAgent:
 		return m.viewSelectAgent()
+	case RepoModeConfirmDelete:
+		return m.viewList() + components.ConfirmDialog(m.Dialog, m.Width, m.Height)
 	default:
 		return m.viewList()
 	}
@@ -392,7 +453,7 @@ func (m ReposModel) viewList() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("REPOSITORIES", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Repositories") + "\n\n")
 
 	b.WriteString(components.Section("OVERVIEW", w) + "\n\n")
 	var statsContent strings.Builder
@@ -407,11 +468,15 @@ func (m ReposModel) viewList() string {
 
 	b.WriteString(components.Section("REPOSITORY LIST", w) + "\n\n")
 
+	if m.Loading {
+		b.WriteString(components.Loading(m.SpinnerFrame, "Loading repositories...") + "\n\n")
+	}
+
 	var listContent strings.Builder
-	if len(m.Repos) == 0 {
+	if len(m.Repos) == 0 && !m.Loading {
 		listContent.WriteString("  " + styles.MutedStyle.Render("No repositories configured") + "\n")
 		listContent.WriteString("  " + styles.SubtleStyle.Render("Press '+' to add your first repository"))
-	} else {
+	} else if len(m.Repos) > 0 {
 		listContent.WriteString(components.RepoHeader(w) + "\n")
 		listContent.WriteString("  " + styles.Line(w-8) + "\n")
 		for i, r := range m.Repos {
@@ -424,11 +489,18 @@ func (m ReposModel) viewList() string {
 				}
 				listContent.WriteString(components.RepoCard(card, w-8) + "\n")
 			} else {
-				listContent.WriteString(components.RepoRow(r.Name, r.Branch, r.Agent, r.AutoDeploy, r.LastStatus, r.LastTime, selected, w) + "\n")
+				row := components.RepoRow(r.Name, r.Branch, r.Agent, r.AutoDeploy, r.LastStatus, r.LastTime, selected, w)
+				if selected {
+					listContent.WriteString(components.SelectedRow(row, true) + "\n")
+				} else {
+					listContent.WriteString(row + "\n")
+				}
 			}
 		}
 	}
-	b.WriteString(components.Wrap(listContent.String(), w) + "\n")
+	if listContent.Len() > 0 {
+		b.WriteString(components.Wrap(listContent.String(), w) + "\n")
+	}
 
 	content := b.String()
 	lines := helper.CountLines(content)
@@ -447,52 +519,51 @@ func (m ReposModel) viewList() string {
 func (m ReposModel) viewAdd() string {
 	var b strings.Builder
 	w := m.Width
-
+	stepNames := []string{"Name", "URL", "Branch", "Build System", "Build File", "Path", "Auto Deploy"}
+	currentStepName := stepNames[m.AddStep]
 	b.WriteString("\n")
-	b.WriteString(components.Header("ADD REPOSITORY", w) + "\n\n")
-
-	b.WriteString(components.Section(fmt.Sprintf("STEP %d OF 7", m.AddStep+1), w) + "\n\n")
-
-	steps := []struct {
-		label string
-		value string
-	}{
-		{"Repository Name", m.NewRepo.Name},
-		{"Git URL", m.NewRepo.URL},
-		{"Branch", m.NewRepo.Branch},
-		{"Build System", m.NewRepo.BuildSystem},
-		{"Build File (optional)", m.NewRepo.BuildFile},
-		{"Deploy Path (optional)", m.NewRepo.Path},
-		{"Auto Deploy", fmt.Sprintf("%v", m.NewRepo.AutoDeploy)},
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Repositories", "Add Repository", currentStepName) + "\n\n")
+	stepperSteps := []components.StepperStep{
+		{Label: "Repository Name", Value: m.NewRepo.Name},
+		{Label: "Git URL", Value: m.NewRepo.URL},
+		{Label: "Branch", Value: m.NewRepo.Branch},
+		{Label: "Build System", Value: m.NewRepo.BuildSystem},
+		{Label: "Build File", Value: m.NewRepo.BuildFile},
+		{Label: "Deploy Path", Value: m.NewRepo.Path},
+		{Label: "Auto Deploy", Value: fmt.Sprintf("%v", m.NewRepo.AutoDeploy)},
 	}
 
+	b.WriteString(components.FormStepper(stepperSteps, m.AddStep, w) + "\n")
 	var formContent strings.Builder
-	for i, s := range steps {
-		if i < m.AddStep {
-			formContent.WriteString("  " + styles.SuccessStyle.Render(styles.IconSuccess) + "  " +
-				styles.SubtleStyle.Render(s.label) + "  " + s.value + "\n")
-		} else if i == m.AddStep {
-			formContent.WriteString("\n")
-			if i == 3 {
-				formContent.WriteString("  " + styles.SubtleStyle.Render(s.label) + "\n\n")
-				for j, bs := range buildSystems {
-					if j == m.BuildCursor {
-						formContent.WriteString("  " + styles.PrimaryStyle.Render("["+bs+"]"))
-					} else {
-						formContent.WriteString("  " + styles.MutedStyle.Render("["+bs+"]"))
-					}
-				}
-				formContent.WriteString("\n\n  " + styles.MutedStyle.Render("← → to select, enter to confirm"))
-			} else if i == 6 {
-				formContent.WriteString(components.Toggle(s.label, m.NewRepo.AutoDeploy, true) + "\n")
-				formContent.WriteString("\n  " + styles.MutedStyle.Render("Press space to toggle"))
-			} else if i == 4 {
-				formContent.WriteString(components.InputWithHint(s.label, s.value, "e.g. docker-compose.prod.yml", true, w-8))
+	switch m.AddStep {
+	case RepoStepBuild:
+		formContent.WriteString("\n")
+		for j, bs := range buildSystems {
+			if j == m.BuildCursor {
+				formContent.WriteString("  " + styles.PrimaryStyle.Render("["+bs+"]"))
 			} else {
-				formContent.WriteString(components.Input(s.label, s.value, true, w-8))
+				formContent.WriteString("  " + styles.MutedStyle.Render("["+bs+"]"))
 			}
 		}
+		formContent.WriteString("\n\n  " + styles.MutedStyle.Render("← → to select, enter to confirm"))
+
+	case RepoStepAutoDeploy:
+		formContent.WriteString("\n")
+		formContent.WriteString(components.Toggle("Auto Deploy", m.NewRepo.AutoDeploy, true) + "\n")
+		formContent.WriteString("\n  " + styles.MutedStyle.Render("Press space to toggle, enter to continue"))
+
+	default:
+		inputView := styles.InputBoxFocused.Width(w - 8).Render(m.input.View())
+		formContent.WriteString("\n  " + inputView)
+
+		switch m.AddStep {
+		case RepoStepBuildFile:
+			formContent.WriteString("\n  " + styles.MutedStyle.Render("e.g. docker-compose.prod.yml (optional)"))
+		case RepoStepPath:
+			formContent.WriteString("\n  " + styles.MutedStyle.Render("Relative path to deploy directory (optional)"))
+		}
 	}
+
 	if m.err != nil {
 		formContent.WriteString("\n\n" + styles.ErrorStyle.Render(styles.IconError) + "  " + styles.ErrorStyle.Render(m.err.Error()))
 	}
@@ -515,7 +586,7 @@ func (m ReposModel) viewSelectAgent() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("SELECT AGENT", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Repositories", "Add Repository", "Select Agent") + "\n\n")
 
 	b.WriteString(components.Section("CHOOSE DEPLOYMENT TARGET", w) + "\n\n")
 

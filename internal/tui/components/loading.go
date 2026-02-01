@@ -15,27 +15,26 @@
  * You should have received a copy of the MIT License
  * along with uruflow. If not, see the LICENSE file in the project root.
  */
-package main
+
+package components
 
 import (
-	"fmt"
-	"os"
-
-	"github.com/urustack/uruflow/internal/cli"
-	"github.com/urustack/uruflow/pkg/logger"
+	"github.com/urustack/uruflow/internal/tui/styles"
 )
 
-func main() {
-	if err := logger.Init("/var/log/uruflow-server.log", "info"); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
-		os.Exit(1)
+func Loading(frame int, message string) string {
+	spinner := styles.Spinner(frame)
+	if message != "" {
+		return "  " + spinner + "  " + styles.MutedStyle.Render(message)
 	}
+	return "  " + spinner
+}
 
-	logger.Info("Starting UruFlow Server")
+func LoadingBox(frame int, message string, w int) string {
+	content := Loading(frame, message)
+	return Wrap(content, w)
+}
 
-	if err := cli.Execute(); err != nil {
-		logger.Error("Fatal error: %v", err)
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+func LoadingInline(frame int) string {
+	return styles.Spinner(frame)
 }

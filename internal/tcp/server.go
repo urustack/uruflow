@@ -21,7 +21,6 @@ package tcp
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -32,6 +31,7 @@ import (
 	"github.com/urustack/uruflow/internal/storage"
 	"github.com/urustack/uruflow/internal/tcp/protocol"
 	"github.com/urustack/uruflow/pkg/helper"
+	"github.com/urustack/uruflow/pkg/logger"
 )
 
 const (
@@ -41,14 +41,15 @@ const (
 )
 
 type Server struct {
-	cfg         *config.Config
-	store       storage.Store
-	listener    net.Listener
-	connections map[string]*Connection
-	mu          sync.RWMutex
-	done        chan struct{}
-	onLog       func(agentID string, log *models.CommandLog)
-	onMetrics   func(agentID string, metrics *models.AgentMetrics)
+	cfg            *config.Config
+	store          storage.Store
+	listener       net.Listener
+	connections    map[string]*Connection
+	mu             sync.RWMutex
+	done           chan struct{}
+	onLog          func(agentID string, log *models.CommandLog)
+	onMetrics      func(agentID string, metrics *models.AgentMetrics)
+	onContainerLog func(agentID string, data protocol.ContainerLogsDataPayload)
 }
 
 func NewServer(cfg *config.Config, store storage.Store) *Server {
@@ -68,6 +69,10 @@ func (s *Server) SetMetricsHandler(handler func(agentID string, metrics *models.
 	s.onMetrics = handler
 }
 
+func (s *Server) SetContainerLogHandler(handler func(agentID string, data protocol.ContainerLogsDataPayload)) {
+	s.onContainerLog = handler
+}
+
 func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.TCPPort)
 
@@ -79,13 +84,13 @@ func (s *Server) Start() error {
 		if err != nil {
 			return fmt.Errorf("tls listen: %w", err)
 		}
-		log.Printf("[TCP] server listening on %s (TLS)", addr)
+		logger.Info("[TCP] server listening on %s (TLS)", addr)
 	} else {
 		listener, err = net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("tcp listen: %w", err)
 		}
-		log.Printf("[TCP] server listening on %s", addr)
+		logger.Info("[TCP] server listening on %s", addr)
 	}
 
 	s.listener = listener
@@ -125,7 +130,7 @@ func (s *Server) listenAutoTLS(addr string) (net.Listener, error) {
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	log.Printf("[TCP] using auto-generated self-signed certificate")
+	logger.Info("[TCP] using auto-generated self-signed certificate")
 	return tls.Listen("tcp", addr, tlsConfig)
 }
 
@@ -155,7 +160,7 @@ func (s *Server) acceptRequests() {
 				case <-s.done:
 					return
 				default:
-					log.Printf("[TCP] accept error: %v", err)
+					logger.Error("[TCP] accept error: %v", err)
 					continue
 				}
 			}
@@ -170,7 +175,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 
 	agentID, err := s.authenticate(conn)
 	if err != nil {
-		log.Printf("[TCP] auth failed for %s: %v", conn.RemoteAddr(), err)
+		logger.Warn("[TCP] auth failed for %s: %v", conn.RemoteAddr(), err)
 		conn.Close()
 		return
 	}
@@ -178,7 +183,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 	s.addConnection(agentID, conn)
 	defer s.removeConnection(agentID)
 
-	log.Printf("[TCP] agent %s connected", conn.AgentName)
+	logger.Info("[TCP] agent %s connected", conn.AgentName)
 	s.handleMessages(conn)
 }
 
@@ -240,7 +245,7 @@ func (s *Server) authenticate(conn *Connection) (string, error) {
 	okMsg, _ := protocol.NewMessage(protocol.TypeAuthOK, protocol.AuthOKPayload{
 		AgentID:       agentCfg.ID,
 		Name:          agentCfg.Name,
-		ServerVersion: "1.0.0",
+		ServerVersion: "1.1.0",
 	})
 	conn.Send(okMsg)
 
@@ -282,6 +287,11 @@ func (s *Server) processMessage(conn *Connection, msg *protocol.Message) {
 		conn.UpdatePing()
 	case protocol.TypeDisconnect:
 		conn.Close()
+	case protocol.TypeContainerLogsData:
+		var data protocol.ContainerLogsDataPayload
+		if err := msg.Decode(&data); err == nil && s.onContainerLog != nil {
+			s.onContainerLog(conn.AgentID, data)
+		}
 	}
 }
 
@@ -302,11 +312,19 @@ func (s *Server) handleMetrics(conn *Connection, msg *protocol.Message) {
 		LoadAvg:       metrics.System.LoadAvg,
 		Uptime:        metrics.System.Uptime,
 	}
-
 	s.store.UpdateAgentMetrics(conn.AgentID, agentMetrics)
 
 	if s.onMetrics != nil {
 		s.onMetrics(conn.AgentID, agentMetrics)
+	}
+
+	activeAlerts, _ := s.store.GetActiveAlerts()
+
+	activeAlertMap := make(map[string]*models.Alert)
+	for _, a := range activeAlerts {
+		if a.AgentID == conn.AgentID && !a.Resolved {
+			activeAlertMap[a.Message] = &a
+		}
 	}
 
 	for _, c := range metrics.Containers {
@@ -327,22 +345,35 @@ func (s *Server) handleMetrics(conn *Connection, msg *protocol.Message) {
 		}
 		s.store.UpsertContainer(container)
 
-		if c.Status != "running" {
-			if alert := logic.CheckContainerDown(conn.AgentID, conn.AgentName, c.Name); alert != nil {
-				s.store.CreateAlert(alert)
+		alertMsg := fmt.Sprintf("Container %s is not running", c.Name)
+
+		if c.Status == "running" {
+			if alert, exists := activeAlertMap[alertMsg]; exists {
+				s.store.ResolveAlert(alert.ID)
+				delete(activeAlertMap, alertMsg)
+			}
+		} else if c.Status != "created" && c.Status != "starting" && c.Status != "restarting" {
+			if _, exists := activeAlertMap[alertMsg]; !exists {
+				if alert := logic.CheckContainerDown(conn.AgentID, conn.AgentName, c.Name); alert != nil {
+					s.store.CreateAlert(alert)
+					activeAlertMap[alert.Message] = alert
+				}
 			}
 		}
 	}
 
-	if alert := logic.CheckCPU(conn.AgentID, conn.AgentName, metrics.System.CPUPercent); alert != nil {
-		s.store.CreateAlert(alert)
+	createIfNotExists := func(alert *models.Alert) {
+		if alert != nil {
+			if _, exists := activeAlertMap[alert.Message]; !exists {
+				s.store.CreateAlert(alert)
+				activeAlertMap[alert.Message] = alert
+			}
+		}
 	}
-	if alert := logic.CheckMemory(conn.AgentID, conn.AgentName, metrics.System.MemoryPercent); alert != nil {
-		s.store.CreateAlert(alert)
-	}
-	if alert := logic.CheckDisk(conn.AgentID, conn.AgentName, metrics.System.DiskPercent); alert != nil {
-		s.store.CreateAlert(alert)
-	}
+
+	createIfNotExists(logic.CheckCPU(conn.AgentID, conn.AgentName, metrics.System.CPUPercent))
+	createIfNotExists(logic.CheckMemory(conn.AgentID, conn.AgentName, metrics.System.MemoryPercent))
+	createIfNotExists(logic.CheckDisk(conn.AgentID, conn.AgentName, metrics.System.DiskPercent))
 
 	conn.Send(&protocol.Message{Type: protocol.TypeMetricsAck})
 }
@@ -359,7 +390,7 @@ func (s *Server) handleCommandAck(conn *Connection, msg *protocol.Message) {
 		s.store.UpdateDeployment(deploy)
 	}
 
-	log.Printf("[TCP] agent %s acknowledged command %s", conn.AgentName, ack.CommandID)
+	logger.Info("[TCP] agent %s acknowledged command %s", conn.AgentName, ack.CommandID)
 }
 
 func (s *Server) handleCommandStart(conn *Connection, msg *protocol.Message) {
@@ -373,7 +404,7 @@ func (s *Server) handleCommandStart(conn *Connection, msg *protocol.Message) {
 		deploy.Status = models.DeployRunning
 		s.store.UpdateDeployment(deploy)
 	}
-	log.Printf("[TCP] agent %s started deployment %s", conn.AgentName, start.CommandID)
+	logger.Info("[TCP] agent %s started deployment %s", conn.AgentName, start.CommandID)
 }
 
 func (s *Server) handleCommandLog(conn *Connection, msg *protocol.Message) {
@@ -438,7 +469,7 @@ func (s *Server) handleCommandDone(conn *Connection, msg *protocol.Message) {
 		}
 	}
 
-	log.Printf("[TCP] agent %s completed deployment %s: %s", conn.AgentName, done.CommandID, done.Status)
+	logger.Info("[TCP] agent %s completed deployment %s: %s", conn.AgentName, done.CommandID, done.Status)
 }
 
 func (s *Server) pingService() {
@@ -464,7 +495,7 @@ func (s *Server) pingAll() {
 
 	for _, conn := range conns {
 		if time.Since(conn.LastPing) > PongTimeout {
-			log.Printf("[TCP] agent %s ping timeout, disconnecting", conn.AgentName)
+			logger.Warn("[TCP] agent %s ping timeout, disconnecting", conn.AgentName)
 			s.removeConnection(conn.AgentID)
 			continue
 		}
@@ -494,7 +525,7 @@ func (s *Server) removeConnection(agentID string) {
 			s.store.CreateAlert(alert)
 		}
 
-		log.Printf("[TCP] agent %s disconnected", conn.AgentName)
+		logger.Warn("[TCP] agent %s disconnected", conn.AgentName)
 	}
 }
 
@@ -524,6 +555,38 @@ func (s *Server) SendCommand(agentID string, cmd *models.Command) error {
 	}
 
 	return conn.Send(cmdMsg)
+}
+
+func (s *Server) StreamContainerLogs(agentID, containerID string, tail int, follow bool) error {
+	s.mu.RLock()
+	conn, exists := s.connections[agentID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("agent not connected")
+	}
+
+	msg, _ := protocol.NewMessage(protocol.TypeContainerLogsRequest, protocol.ContainerLogsRequestPayload{
+		ContainerID: containerID,
+		Tail:        tail,
+		Follow:      follow,
+	})
+	return conn.Send(msg)
+}
+
+func (s *Server) StopContainerLogs(agentID, containerID string) error {
+	s.mu.RLock()
+	conn, exists := s.connections[agentID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return nil
+	}
+
+	msg, _ := protocol.NewMessage(protocol.TypeContainerLogsStop, protocol.ContainerLogsStopPayload{
+		ContainerID: containerID,
+	})
+	return conn.Send(msg)
 }
 
 func (s *Server) GetConnectedAgents() []string {

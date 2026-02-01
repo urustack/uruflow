@@ -21,6 +21,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"github.com/urustack/uruflow/pkg/logger"
 	"os"
 	"os/signal"
 	"syscall"
@@ -67,14 +68,18 @@ func initConfig() {
 		var err error
 		cfg, err = config.Load(cfgPath)
 		if err != nil {
-			fmt.Printf("Warning: Failed to load config: %v\n", err)
+			logger.Warn("failed to load config from %s: %v", cfgPath, err)
+		} else {
+			logger.Info("config loaded from %s", cfgPath)
 		}
 	}
 }
 
 func runApplication(cmd *cobra.Command, args []string) {
 	if cfg == nil {
+		logger.Info("No config found, running initialization")
 		if err := tui.RunInit(); err != nil {
+			logger.Error("Initialization failed: %v", err)
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -82,18 +87,22 @@ func runApplication(cmd *cobra.Command, args []string) {
 		var err error
 		cfg, err = config.Load(cfgPath)
 		if err != nil {
+			logger.Error("Failed to load config after init: %v", err)
 			fmt.Printf("Error loading config after init: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
+	logger.Info("Initializing database at %s", cfg.Server.DataDir)
 	store, err := sqlite.New(cfg.Server.DataDir)
 	if err != nil {
+		logger.Error("Database initialization failed: %v", err)
 		fmt.Printf("Error initializing database: %v\n", err)
 		os.Exit(1)
 	}
 	defer store.Close()
 
+	logger.Info("Starting API server")
 	server := api.NewServer(cfg, store)
 
 	_, cancel := context.WithCancel(context.Background())
@@ -104,6 +113,7 @@ func runApplication(cmd *cobra.Command, args []string) {
 
 	go func() {
 		<-sigChan
+		logger.Info("Received shutdown signal")
 		cancel()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
@@ -113,13 +123,16 @@ func runApplication(cmd *cobra.Command, args []string) {
 
 	go func() {
 		if err := server.Start(); err != nil {
+			logger.Error("Server error: %v", err)
 			fmt.Printf("Server error: %v\n", err)
 		}
 	}()
 
 	time.Sleep(100 * time.Millisecond)
 
+	logger.Info("Starting TUI")
 	if err := tui.Run(store, cfg, server); err != nil {
+		logger.Error("TUI error: %v", err)
 		fmt.Printf("TUI Error: %v\n", err)
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
@@ -127,6 +140,7 @@ func runApplication(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	logger.Info("Shutting down gracefully")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	server.Shutdown(shutdownCtx)

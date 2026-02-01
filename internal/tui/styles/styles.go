@@ -25,13 +25,16 @@ import (
 )
 
 var (
-	Primary = lipgloss.Color("#2563EB")
-	Muted   = lipgloss.Color("#888888")
-	Subtle  = lipgloss.Color("#666666")
-	Dim     = lipgloss.Color("#444444")
-	Success = lipgloss.Color("#22C55E")
-	Error   = lipgloss.Color("#EF4444")
-	Warning = lipgloss.Color("#FBBF24")
+	Primary     = lipgloss.Color("#2563EB")
+	PrimaryDark = lipgloss.Color("#1D4ED8")
+	Muted       = lipgloss.Color("#888888")
+	Subtle      = lipgloss.Color("#666666")
+	Dim         = lipgloss.Color("#444444")
+	DimBorder   = lipgloss.Color("#333333")
+	Surface     = lipgloss.Color("#1a1a1a")
+	Success     = lipgloss.Color("#22C55E")
+	Error       = lipgloss.Color("#EF4444")
+	Warning     = lipgloss.Color("#FBBF24")
 )
 
 var (
@@ -48,13 +51,23 @@ var (
 
 	Box = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Primary).
+		BorderForeground(DimBorder).
 		Padding(1, 2)
 
 	BoxSelected = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(Primary).
+			Background(Surface).
+			Padding(1, 2)
+
+	BoxFocused = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(Primary).
 			Padding(1, 2)
+
+	RowSelected = lipgloss.NewStyle().
+			Background(Surface).
+			Padding(0, 1)
 
 	BoxSuccess = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -94,17 +107,23 @@ var (
 )
 
 const (
-	IconOnline  = "●"
-	IconOffline = "○"
-	IconSuccess = "✓"
-	IconError   = "✗"
-	IconWarning = "⚠"
-	IconPointer = "▸"
-	IconDash    = "─"
-	IconSpin    = "◐"
-	IconUncheck = "◇"
-	IconBar     = "│"
+	IconOnline    = "●"
+	IconOffline   = "○"
+	IconSuccess   = "✓"
+	IconError     = "✗"
+	IconWarning   = "⚠"
+	IconPointer   = "▸"
+	IconDash      = "─"
+	IconSpin      = "◐"
+	IconUncheck   = "◇"
+	IconBar       = "│"
+	IconBreadSep  = "›"
+	IconStepDone  = "●"
+	IconStepCurr  = "◉"
+	IconStepTodo  = "○"
 )
+
+var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func Online() string  { return SuccessStyle.Render(IconOnline) }
 func Offline() string { return MutedStyle.Render(IconOffline) }
@@ -130,8 +149,21 @@ func LogoCompact() string {
 	return PrimaryStyle.Bold(true).Render("◆ URUFLOW")
 }
 
+func LogoInline() string {
+	return PrimaryStyle.Bold(true).Render("URUFLOW")
+}
+
+func BreadcrumbSep() string {
+	return SubtleStyle.Render(" " + IconBreadSep + " ")
+}
+
+func Spinner(frame int) string {
+	idx := frame % len(SpinnerFrames)
+	return PrimaryStyle.Render(SpinnerFrames[idx])
+}
+
 func Tagline() string {
-	return SubtleStyle.Render("Automation Deployment System") + "  " + MutedStyle.Render("v1.0.0")
+	return SubtleStyle.Render("Automation Deployment System") + "  " + MutedStyle.Render("v1.1.0")
 }
 
 func Pad(s string, w int) string {

@@ -30,15 +30,18 @@ import (
 )
 
 type DashboardModel struct {
-	store       storage.Store
-	Width       int
-	Height      int
-	Agents      []AgentData
-	Deployments []DeploymentData
-	Alerts      []AlertData
-	Message     string
-	MessageType string
-	err         error
+	store        storage.Store
+	Width        int
+	Height       int
+	Agents       []AgentData
+	Deployments  []DeploymentData
+	Alerts       []AlertData
+	Message      string
+	MessageType  string
+	Loading      bool
+	SpinnerFrame int
+	ShowHelp     bool
+	err          error
 }
 
 func NewDashboardModel(store storage.Store) DashboardModel {
@@ -56,20 +59,41 @@ func (m *DashboardModel) ClearMessage() {
 }
 
 func (m DashboardModel) Init() tea.Cmd {
-	return tea.Batch(m.fetchData, m.tick)
+	m.Loading = true
+	return tea.Batch(m.fetchData, m.tick, m.spinnerTick)
 }
+
+func (m DashboardModel) spinnerTick() tea.Msg {
+	time.Sleep(80 * time.Millisecond)
+	return SpinnerTickMsg{}
+}
+
+type SpinnerTickMsg struct{}
 
 func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "?":
+			m.ShowHelp = !m.ShowHelp
+		}
+	case SpinnerTickMsg:
+		m.SpinnerFrame++
+		if m.Loading {
+			return m, m.spinnerTick
+		}
 	case TickMsg:
-		return m, tea.Batch(m.fetchData, m.tick)
+		m.Loading = true
+		return m, tea.Batch(m.fetchData, m.tick, m.spinnerTick)
 	case DataMsg:
 		m.Agents = msg.Agents
 		m.Deployments = msg.Deployments
 		m.Alerts = msg.Alerts
+		m.Loading = false
 		return m, nil
 	case error:
 		m.err = msg
+		m.Loading = false
 		return m, nil
 	}
 	return m, nil
@@ -146,11 +170,17 @@ func (m DashboardModel) View() string {
 
 	var b strings.Builder
 	w := m.Width
-
 	b.WriteString("\n")
-	b.WriteString(components.CenteredLogo(w))
-	b.WriteString("\n\n")
-
+	b.WriteString(components.ViewHeader(w, "Dashboard") + "\n")
+	online, offline := 0, 0
+	for _, a := range m.Agents {
+		if a.Online {
+			online++
+		} else {
+			offline++
+		}
+	}
+	b.WriteString(components.StatusBar(online, offline, len(m.Alerts), w) + "\n\n")
 	if m.Message != "" {
 		switch m.MessageType {
 		case "success":
@@ -164,30 +194,24 @@ func (m DashboardModel) View() string {
 		}
 	}
 
-	online, offline := 0, 0
-	for _, a := range m.Agents {
-		if a.Online {
-			online++
-		} else {
-			offline++
-		}
+	if m.Loading && len(m.Agents) == 0 {
+		b.WriteString(components.Loading(m.SpinnerFrame, "Loading data...") + "\n\n")
 	}
 
 	b.WriteString(components.Section("AGENTS", w) + "\n\n")
-
 	var agentContent strings.Builder
-	agentContent.WriteString(components.Stats(online, offline, len(m.Agents)) + "\n\n")
-
-	if len(m.Agents) == 0 {
+	if len(m.Agents) == 0 && !m.Loading {
 		agentContent.WriteString("  " + styles.MutedStyle.Render("No agents registered. Press 'a' to add one."))
-	} else {
+	} else if len(m.Agents) > 0 {
 		agentContent.WriteString(components.AgentHeader(w) + "\n")
 		agentContent.WriteString("  " + styles.Line(w-8) + "\n")
 		for _, a := range m.Agents {
 			agentContent.WriteString(components.AgentRow(a.Name, a.Online, a.CPU, a.Memory, a.Disk, a.Uptime, false, w) + "\n")
 		}
 	}
-	b.WriteString(components.Wrap(agentContent.String(), w) + "\n\n")
+	if agentContent.Len() > 0 {
+		b.WriteString(components.Wrap(agentContent.String(), w) + "\n\n")
+	}
 
 	b.WriteString(components.Section("RECENT DEPLOYMENTS", w) + "\n\n")
 
@@ -208,7 +232,6 @@ func (m DashboardModel) View() string {
 		}
 	}
 	b.WriteString(components.Wrap(deployContent.String(), w) + "\n\n")
-
 	b.WriteString(components.Section("ALERTS", w) + "\n\n")
 
 	var alertContent strings.Builder
@@ -232,9 +255,19 @@ func (m DashboardModel) View() string {
 	}
 
 	content += "\n" + styles.Line(w) + "\n"
-	content += components.Help([][]string{
-		{"a", "agents"}, {"r", "repos"}, {"x", "alerts"}, {"l", "history"}, {"d", "deploy"}, {"tab", "cycle"}, {"q", "quit"},
-	})
+	helpItems := [][]string{
+		{"a", "agents"}, {"r", "repos"}, {"x", "alerts"}, {"l", "history"}, {"d", "deploy"}, {"tab", "cycle"}, {"?", "help"}, {"q", "quit"},
+	}
+	content += components.Help(helpItems)
+
+	if m.Loading {
+		content += "  " + components.LoadingInline(m.SpinnerFrame)
+	}
+
+	if m.ShowHelp {
+		content += "\n\n" + styles.MutedStyle.Render("  Navigation: tab to cycle views, esc to return to dashboard")
+		content += "\n" + styles.MutedStyle.Render("  Quick access: a=agents, r=repos, x=alerts, l=logs, d=deploy")
+	}
 
 	return content
 }

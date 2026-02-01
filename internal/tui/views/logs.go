@@ -240,7 +240,7 @@ func (m LogsModel) viewSelect() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("DEPLOYMENT HISTORY", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "History") + "\n\n")
 	b.WriteString(components.Section("PAST DEPLOYMENTS", w) + "\n\n")
 
 	var listContent strings.Builder
@@ -299,7 +299,7 @@ func (m LogsModel) viewLogs() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("DEPLOYMENT LOGS", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "History", "Logs") + "\n\n")
 
 	title := m.Repo
 	if title == "" {

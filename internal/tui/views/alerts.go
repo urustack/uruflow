@@ -30,15 +30,26 @@ import (
 	"github.com/urustack/uruflow/pkg/helper"
 )
 
+type AlertsMode int
+
+const (
+	AlertsModeList AlertsMode = iota
+	AlertsModeConfirmResolve
+)
+
 type AlertsModel struct {
-	store    storage.Store
-	Width    int
-	Height   int
-	Active   []AlertData
-	Recent   []AlertData
-	Cursor   int
-	Expanded bool
-	err      error
+	store        storage.Store
+	Width        int
+	Height       int
+	Active       []AlertData
+	Recent       []AlertData
+	Cursor       int
+	Expanded     bool
+	Mode         AlertsMode
+	Dialog       components.Dialog
+	Loading      bool
+	SpinnerFrame int
+	err          error
 }
 
 func NewAlertsModel(store storage.Store) AlertsModel {
@@ -52,6 +63,9 @@ func (m AlertsModel) Init() tea.Cmd {
 func (m AlertsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.Mode == AlertsModeConfirmResolve {
+			return m.updateConfirmResolve(msg)
+		}
 		switch msg.String() {
 		case "up", "k":
 			if m.Cursor > 0 {
@@ -64,20 +78,60 @@ func (m AlertsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "x":
 			if m.Cursor < len(m.Active) {
-				return m, m.resolveAlert(m.Active[m.Cursor].ID)
+				m.Dialog = components.ResolveAlertDialog(m.Active[m.Cursor].Type)
+				m.Mode = AlertsModeConfirmResolve
 			}
 		case "e":
 			m.Expanded = !m.Expanded
 		case "r":
-			return m, m.fetchAlerts
+			m.Loading = true
+			return m, tea.Batch(m.fetchAlerts, m.spinnerTick)
+		}
+	case SpinnerTickMsg:
+		m.SpinnerFrame++
+		if m.Loading {
+			return m, m.spinnerTick
 		}
 	case alertsMsg:
 		m.Active = msg.Active
 		m.Recent = msg.Recent
+		m.Loading = false
 		return m, nil
 	case error:
 		m.err = msg
+		m.Loading = false
 		return m, nil
+	}
+	return m, nil
+}
+
+func (m AlertsModel) spinnerTick() tea.Msg {
+	time.Sleep(80 * time.Millisecond)
+	return SpinnerTickMsg{}
+}
+
+func (m AlertsModel) updateConfirmResolve(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n":
+		m.Mode = AlertsModeList
+		m.Dialog.Visible = false
+	case "left", "right", "h", "l", "tab":
+		m.Dialog.ToggleSelection()
+	case "enter":
+		if m.Dialog.IsConfirmed() {
+			m.Dialog.Visible = false
+			m.Mode = AlertsModeList
+			m.Loading = true
+			return m, tea.Batch(m.resolveAlert(m.Active[m.Cursor].ID), m.spinnerTick)
+		} else {
+			m.Mode = AlertsModeList
+			m.Dialog.Visible = false
+		}
+	case "y":
+		m.Dialog.Visible = false
+		m.Mode = AlertsModeList
+		m.Loading = true
+		return m, tea.Batch(m.resolveAlert(m.Active[m.Cursor].ID), m.spinnerTick)
 	}
 	return m, nil
 }
@@ -137,7 +191,7 @@ func (m AlertsModel) View() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("ALERTS", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Alerts") + "\n\n")
 
 	b.WriteString(components.Section("STATUS", w) + "\n\n")
 	var statusContent strings.Builder
@@ -234,6 +288,14 @@ func (m AlertsModel) View() string {
 	content += components.Help([][]string{
 		{"↑↓", "navigate"}, {"e", "expand"}, {"x", "resolve"}, {"r", "refresh"}, {"esc", "back"},
 	})
+
+	if m.Loading {
+		content += "  " + components.LoadingInline(m.SpinnerFrame)
+	}
+
+	if m.Mode == AlertsModeConfirmResolve {
+		content += components.ConfirmDialog(m.Dialog, m.Width, m.Height)
+	}
 
 	return content
 }

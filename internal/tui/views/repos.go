@@ -40,6 +40,18 @@ const (
 	RepoModeList RepoMode = iota
 	RepoModeAdd
 	RepoModeSelectAgent
+	RepoModeConfirmDelete
+)
+
+const (
+	RepoStepName       = 0
+	RepoStepURL        = 1
+	RepoStepBranch     = 2
+	RepoStepBuild      = 3
+	RepoStepBuildFile  = 4
+	RepoStepPath       = 5
+	RepoStepAutoDeploy = 6
+	RepoStepTotal      = 7
 )
 
 var buildSystems = []string{"compose", "dockerfile", "makefile"}
@@ -66,9 +78,10 @@ type ReposModel struct {
 	NewRepo       NewRepoData
 	AgentCursor   int
 	BuildCursor   int
-
-	// Single input model handles all text fields and pasting
-	input textinput.Model
+	Dialog        components.Dialog
+	Loading       bool
+	SpinnerFrame  int
+	input         textinput.Model
 
 	err error
 }
@@ -115,6 +128,13 @@ func (m ReposModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAdd(msg)
 		case RepoModeSelectAgent:
 			return m.updateSelectAgent(msg)
+		case RepoModeConfirmDelete:
+			return m.updateConfirmDelete(msg)
+		}
+	case SpinnerTickMsg:
+		m.SpinnerFrame++
+		if m.Loading {
+			return m, m.spinnerTick
 		}
 	case RepoResultMsg:
 		if msg.Success {
@@ -123,24 +143,57 @@ func (m ReposModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = msg.Error
 		}
+		m.Loading = false
 		return m, m.fetchRepos
 	case []RepoData:
 		m.Repos = msg
+		m.Loading = false
 		return m, nil
 	case []AgentData:
 		m.Agents = msg
 		return m, nil
 	case error:
 		m.err = msg
+		m.Loading = false
 		return m, nil
 	}
 
-	// Allow textinput to handle cursor blinking
 	if m.Mode == RepoModeAdd {
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 	}
 
+	return m, nil
+}
+
+func (m ReposModel) spinnerTick() tea.Msg {
+	time.Sleep(80 * time.Millisecond)
+	return SpinnerTickMsg{}
+}
+
+func (m ReposModel) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n":
+		m.Mode = RepoModeList
+		m.Dialog.Visible = false
+	case "left", "right", "h", "l", "tab":
+		m.Dialog.ToggleSelection()
+	case "enter":
+		if m.Dialog.IsConfirmed() {
+			m.Dialog.Visible = false
+			m.Mode = RepoModeList
+			m.Loading = true
+			return m, tea.Batch(m.deleteRepo(m.Repos[m.Cursor].Name), m.spinnerTick)
+		} else {
+			m.Mode = RepoModeList
+			m.Dialog.Visible = false
+		}
+	case "y":
+		m.Dialog.Visible = false
+		m.Mode = RepoModeList
+		m.Loading = true
+		return m, tea.Batch(m.deleteRepo(m.Repos[m.Cursor].Name), m.spinnerTick)
+	}
 	return m, nil
 }
 
@@ -164,8 +217,6 @@ func (m ReposModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.NewRepo = NewRepoData{Branch: "main", AutoDeploy: true, BuildSystem: "compose"}
 		m.BuildCursor = 0
 		m.err = nil
-
-		// Reset input for the first step
 		m.input.SetValue("")
 		m.input.Placeholder = "my-service"
 		m.input.Focus()
@@ -173,10 +224,12 @@ func (m ReposModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "-", "delete", "backspace":
 		if len(m.Repos) > 0 {
-			return m, m.deleteRepo(m.Repos[m.Cursor].Name)
+			m.Dialog = components.DeleteRepoDialog(m.Repos[m.Cursor].Name)
+			m.Mode = RepoModeConfirmDelete
 		}
 	case "r":
-		return m, m.fetchRepos
+		m.Loading = true
+		return m, tea.Batch(m.fetchRepos, m.spinnerTick)
 	case "e":
 		m.Expanded = !m.Expanded
 	}
@@ -184,14 +237,12 @@ func (m ReposModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m ReposModel) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Determine if the current step is a selection (not text input)
 	isSelectionStep := (m.AddStep == 3 || m.AddStep == 6)
 
 	switch msg.String() {
 	case "esc":
 		if m.AddStep > 0 {
 			m.AddStep--
-			// Restore previous value to input when going back
 			switch m.AddStep {
 			case 0:
 				m.input.SetValue(m.NewRepo.Name)
@@ -210,44 +261,39 @@ func (m ReposModel) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		// Save current input value to the struct
 		val := m.input.Value()
-
 		switch m.AddStep {
-		case 0:
+		case RepoStepName:
 			if val == "" {
 				return m, nil
 			}
 			m.NewRepo.Name = val
-		case 1:
+		case RepoStepURL:
 			if val == "" {
 				return m, nil
 			}
 			m.NewRepo.URL = val
-		case 2:
+		case RepoStepBranch:
 			m.NewRepo.Branch = val
-		case 3:
+		case RepoStepBuild:
 			m.NewRepo.BuildSystem = buildSystems[m.BuildCursor]
-		case 4:
+		case RepoStepBuildFile:
 			m.NewRepo.BuildFile = val
-		case 5:
+		case RepoStepPath:
 			m.NewRepo.Path = val
 		}
 
-		// Advance to next step
-		if m.AddStep < 6 {
+		if m.AddStep < RepoStepAutoDeploy {
 			m.AddStep++
-
-			// Prepare input for the next step
 			m.input.SetValue("")
 			switch m.AddStep {
-			case 1:
+			case RepoStepURL:
 				m.input.Placeholder = "https://github.com/user/repo.git"
-			case 2:
+			case RepoStepBranch:
 				m.input.SetValue("main")
-			case 4:
+			case RepoStepBuildFile:
 				m.input.Placeholder = "docker-compose.yml"
-			case 5:
+			case RepoStepPath:
 				m.input.Placeholder = "./"
 			}
 		} else {
@@ -256,22 +302,20 @@ func (m ReposModel) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	// Special handling for Step 3 (Selection) and Step 6 (Toggle)
 	case "left", "h":
-		if m.AddStep == 3 && m.BuildCursor > 0 {
+		if m.AddStep == RepoStepBuild && m.BuildCursor > 0 {
 			m.BuildCursor--
 		}
 	case "right", "l":
-		if m.AddStep == 3 && m.BuildCursor < len(buildSystems)-1 {
+		if m.AddStep == RepoStepBuild && m.BuildCursor < len(buildSystems)-1 {
 			m.BuildCursor++
 		}
 	case "tab", " ":
-		if m.AddStep == 6 {
+		if m.AddStep == RepoStepAutoDeploy {
 			m.NewRepo.AutoDeploy = !m.NewRepo.AutoDeploy
 		}
 	}
 
-	// Pass key events to the text input only if we are on a text step
 	var cmd tea.Cmd
 	if !isSelectionStep {
 		m.input, cmd = m.input.Update(msg)
@@ -397,6 +441,8 @@ func (m ReposModel) View() string {
 		return m.viewAdd()
 	case RepoModeSelectAgent:
 		return m.viewSelectAgent()
+	case RepoModeConfirmDelete:
+		return m.viewList() + components.ConfirmDialog(m.Dialog, m.Width, m.Height)
 	default:
 		return m.viewList()
 	}
@@ -407,7 +453,7 @@ func (m ReposModel) viewList() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("REPOSITORIES", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Repositories") + "\n\n")
 
 	b.WriteString(components.Section("OVERVIEW", w) + "\n\n")
 	var statsContent strings.Builder
@@ -422,11 +468,15 @@ func (m ReposModel) viewList() string {
 
 	b.WriteString(components.Section("REPOSITORY LIST", w) + "\n\n")
 
+	if m.Loading {
+		b.WriteString(components.Loading(m.SpinnerFrame, "Loading repositories...") + "\n\n")
+	}
+
 	var listContent strings.Builder
-	if len(m.Repos) == 0 {
+	if len(m.Repos) == 0 && !m.Loading {
 		listContent.WriteString("  " + styles.MutedStyle.Render("No repositories configured") + "\n")
 		listContent.WriteString("  " + styles.SubtleStyle.Render("Press '+' to add your first repository"))
-	} else {
+	} else if len(m.Repos) > 0 {
 		listContent.WriteString(components.RepoHeader(w) + "\n")
 		listContent.WriteString("  " + styles.Line(w-8) + "\n")
 		for i, r := range m.Repos {
@@ -439,11 +489,18 @@ func (m ReposModel) viewList() string {
 				}
 				listContent.WriteString(components.RepoCard(card, w-8) + "\n")
 			} else {
-				listContent.WriteString(components.RepoRow(r.Name, r.Branch, r.Agent, r.AutoDeploy, r.LastStatus, r.LastTime, selected, w) + "\n")
+				row := components.RepoRow(r.Name, r.Branch, r.Agent, r.AutoDeploy, r.LastStatus, r.LastTime, selected, w)
+				if selected {
+					listContent.WriteString(components.SelectedRow(row, true) + "\n")
+				} else {
+					listContent.WriteString(row + "\n")
+				}
 			}
 		}
 	}
-	b.WriteString(components.Wrap(listContent.String(), w) + "\n")
+	if listContent.Len() > 0 {
+		b.WriteString(components.Wrap(listContent.String(), w) + "\n")
+	}
 
 	content := b.String()
 	lines := helper.CountLines(content)
@@ -462,63 +519,48 @@ func (m ReposModel) viewList() string {
 func (m ReposModel) viewAdd() string {
 	var b strings.Builder
 	w := m.Width
-
+	stepNames := []string{"Name", "URL", "Branch", "Build System", "Build File", "Path", "Auto Deploy"}
+	currentStepName := stepNames[m.AddStep]
 	b.WriteString("\n")
-	b.WriteString(components.Header("ADD REPOSITORY", w) + "\n\n")
-
-	b.WriteString(components.Section(fmt.Sprintf("STEP %d OF 7", m.AddStep+1), w) + "\n\n")
-
-	steps := []struct {
-		label string
-		value string
-	}{
-		{"Repository Name", m.NewRepo.Name},
-		{"Git URL", m.NewRepo.URL},
-		{"Branch", m.NewRepo.Branch},
-		{"Build System", m.NewRepo.BuildSystem},
-		{"Build File (optional)", m.NewRepo.BuildFile},
-		{"Deploy Path (optional)", m.NewRepo.Path},
-		{"Auto Deploy", fmt.Sprintf("%v", m.NewRepo.AutoDeploy)},
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Repositories", "Add Repository", currentStepName) + "\n\n")
+	stepperSteps := []components.StepperStep{
+		{Label: "Repository Name", Value: m.NewRepo.Name},
+		{Label: "Git URL", Value: m.NewRepo.URL},
+		{Label: "Branch", Value: m.NewRepo.Branch},
+		{Label: "Build System", Value: m.NewRepo.BuildSystem},
+		{Label: "Build File", Value: m.NewRepo.BuildFile},
+		{Label: "Deploy Path", Value: m.NewRepo.Path},
+		{Label: "Auto Deploy", Value: fmt.Sprintf("%v", m.NewRepo.AutoDeploy)},
 	}
 
+	b.WriteString(components.FormStepper(stepperSteps, m.AddStep, w) + "\n")
 	var formContent strings.Builder
-	for i, s := range steps {
-		if i < m.AddStep {
-			// Completed steps
-			formContent.WriteString("  " + styles.SuccessStyle.Render(styles.IconSuccess) + "  " +
-				styles.SubtleStyle.Render(s.label) + "  " + s.value + "\n")
-		} else if i == m.AddStep {
-			formContent.WriteString("\n")
-
-			if i == 3 {
-				// Selection Step
-				formContent.WriteString("  " + styles.SubtleStyle.Render(s.label) + "\n\n")
-				for j, bs := range buildSystems {
-					if j == m.BuildCursor {
-						formContent.WriteString("  " + styles.PrimaryStyle.Render("["+bs+"]"))
-					} else {
-						formContent.WriteString("  " + styles.MutedStyle.Render("["+bs+"]"))
-					}
-				}
-				formContent.WriteString("\n\n  " + styles.MutedStyle.Render("← → to select, enter to confirm"))
-			} else if i == 6 {
-				// Toggle Step
-				formContent.WriteString(components.Toggle(s.label, m.NewRepo.AutoDeploy, true) + "\n")
-				formContent.WriteString("\n  " + styles.MutedStyle.Render("Press space to toggle"))
+	switch m.AddStep {
+	case RepoStepBuild:
+		formContent.WriteString("\n")
+		for j, bs := range buildSystems {
+			if j == m.BuildCursor {
+				formContent.WriteString("  " + styles.PrimaryStyle.Render("["+bs+"]"))
 			} else {
-				// Text Input Step
-				label := styles.SubtleStyle.Render(s.label)
-
-				// Render the input box using your style wrapper
-				inputView := styles.InputBoxFocused.Width(w - 8).Render(m.input.View())
-
-				hint := ""
-				if i == 4 {
-					hint = "\n  " + styles.MutedStyle.Render("e.g. docker-compose.prod.yml")
-				}
-
-				formContent.WriteString(fmt.Sprintf("  %s\n  %s%s", label, inputView, hint))
+				formContent.WriteString("  " + styles.MutedStyle.Render("["+bs+"]"))
 			}
+		}
+		formContent.WriteString("\n\n  " + styles.MutedStyle.Render("← → to select, enter to confirm"))
+
+	case RepoStepAutoDeploy:
+		formContent.WriteString("\n")
+		formContent.WriteString(components.Toggle("Auto Deploy", m.NewRepo.AutoDeploy, true) + "\n")
+		formContent.WriteString("\n  " + styles.MutedStyle.Render("Press space to toggle, enter to continue"))
+
+	default:
+		inputView := styles.InputBoxFocused.Width(w - 8).Render(m.input.View())
+		formContent.WriteString("\n  " + inputView)
+
+		switch m.AddStep {
+		case RepoStepBuildFile:
+			formContent.WriteString("\n  " + styles.MutedStyle.Render("e.g. docker-compose.prod.yml (optional)"))
+		case RepoStepPath:
+			formContent.WriteString("\n  " + styles.MutedStyle.Render("Relative path to deploy directory (optional)"))
 		}
 	}
 
@@ -544,7 +586,7 @@ func (m ReposModel) viewSelectAgent() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("SELECT AGENT", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Repositories", "Add Repository", "Select Agent") + "\n\n")
 
 	b.WriteString(components.Section("CHOOSE DEPLOYMENT TARGET", w) + "\n\n")
 

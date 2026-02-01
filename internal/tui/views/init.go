@@ -163,9 +163,16 @@ func (m InitModel) View() string {
 		b.WriteString(styles.Center(styles.MutedStyle.Render(desc2), w) + "\n")
 	} else {
 		b.WriteString("\n")
-		b.WriteString(components.Header("SETUP", w) + "\n\n")
 
-		b.WriteString(components.Section(fmt.Sprintf("STEP %d OF %d", m.Step, m.TotalSteps), w) + "\n\n")
+		stepNames := []string{"", "Server Ports", "Webhook Secret", "Data Directory", "Review"}
+		b.WriteString(components.ViewHeader(w, "Setup", stepNames[m.Step]) + "\n\n")
+		stepperSteps := []components.StepperStep{
+			{Label: "Server Ports", Value: fmt.Sprintf("HTTP:%s TCP:%s", m.HTTPPort, m.TCPPort)},
+			{Label: "Webhook Secret", Value: m.Secret[:16] + "..."},
+			{Label: "Data Directory", Value: m.DataDir},
+			{Label: "Review & Save", Value: ""},
+		}
+		b.WriteString(components.FormStepper(stepperSteps, m.Step-1, w) + "\n")
 
 		switch m.Step {
 		case 1:

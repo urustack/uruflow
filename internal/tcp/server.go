@@ -245,7 +245,7 @@ func (s *Server) authenticate(conn *Connection) (string, error) {
 	okMsg, _ := protocol.NewMessage(protocol.TypeAuthOK, protocol.AuthOKPayload{
 		AgentID:       agentCfg.ID,
 		Name:          agentCfg.Name,
-		ServerVersion: "1.0.0",
+		ServerVersion: "1.1.0",
 	})
 	conn.Send(okMsg)
 

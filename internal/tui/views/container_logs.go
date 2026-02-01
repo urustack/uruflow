@@ -210,7 +210,7 @@ func (m ContainerLogsModel) viewSelect() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("SELECT CONTAINER", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Agents", m.AgentName, "Containers") + "\n\n")
 	b.WriteString(components.Section(m.AgentName, w) + "\n\n")
 
 	var listContent strings.Builder
@@ -253,7 +253,7 @@ func (m ContainerLogsModel) viewLogs() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("CONTAINER LOGS", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Agents", m.AgentName, m.ContainerName) + "\n\n")
 
 	headerText := fmt.Sprintf("%s / %s", m.AgentName, m.ContainerName)
 	b.WriteString(components.Section(headerText, w) + "\n\n")

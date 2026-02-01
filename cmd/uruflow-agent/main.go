@@ -31,7 +31,7 @@ import (
 	"github.com/urustack/uruflow/internal/agent/daemon"
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 const (
 	colorReset = "\033[0m"

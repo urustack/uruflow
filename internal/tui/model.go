@@ -41,6 +41,8 @@ type Model struct {
 	Width         int
 	Height        int
 	Ready         bool
+	ShowHelp      bool
+	SpinnerFrame  int
 	Store         storage.Store
 	Config        *config.Config
 	CfgPath       string
@@ -54,6 +56,8 @@ type Model struct {
 	ContainerLogs views.ContainerLogsModel
 	InitState     views.InitModel
 }
+
+type SpinnerTickMsg struct{}
 
 func NewModel(store storage.Store, cfg *config.Config, cfgPath string, server *api.Server) Model {
 	deployService := server.GetDeployService()
@@ -90,7 +94,12 @@ func (m *Model) Init() tea.Cmd {
 	if m.ActiveView == ViewInit {
 		return m.InitState.Init()
 	}
-	return tea.Batch(m.Dashboard.Init(), waitForContainerLogs)
+	return tea.Batch(m.Dashboard.Init(), waitForContainerLogs, m.spinnerTick)
+}
+
+func (m Model) spinnerTick() tea.Msg {
+	time.Sleep(80 * time.Millisecond)
+	return SpinnerTickMsg{}
 }
 
 func (m Model) isInputActive() bool {
@@ -111,6 +120,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case SpinnerTickMsg:
+		m.SpinnerFrame++
+		cmds = append(cmds, m.spinnerTick)
+		return m, tea.Batch(cmds...)
+
 	case views.ContainerLogsMsg:
 		cmds = append(cmds, waitForContainerLogs)
 		if m.ActiveView == ViewContainerLogs {
@@ -125,6 +139,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
+		case "?":
+			m.ShowHelp = !m.ShowHelp
 		case "esc":
 			if m.ActiveView != ViewDashboard && m.ActiveView != ViewInit {
 				if m.ActiveView == ViewAgents && m.Agents.Mode != views.AgentModeList {

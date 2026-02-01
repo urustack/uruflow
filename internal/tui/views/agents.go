@@ -38,6 +38,7 @@ const (
 	AgentModeList AgentMode = iota
 	AgentModeAdd
 	AgentModeResult
+	AgentModeConfirmDelete
 )
 
 type AgentResultMsg struct {
@@ -49,18 +50,21 @@ type AgentResultMsg struct {
 }
 
 type AgentsModel struct {
-	store    storage.Store
-	cfg      *config.Config
-	cfgPath  string
-	Width    int
-	Height   int
-	Agents   []AgentData
-	Cursor   int
-	Expanded bool
-	Mode     AgentMode
-	Input    string
-	Result   AgentAddResult
-	err      error
+	store        storage.Store
+	cfg          *config.Config
+	cfgPath      string
+	Width        int
+	Height       int
+	Agents       []AgentData
+	Cursor       int
+	Expanded     bool
+	Mode         AgentMode
+	Input        string
+	Result       AgentAddResult
+	Dialog       components.Dialog
+	Loading      bool
+	SpinnerFrame int
+	err          error
 }
 
 type AgentAddResult struct {
@@ -87,6 +91,13 @@ func (m AgentsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAdd(msg)
 		case AgentModeResult:
 			return m.updateResult(msg)
+		case AgentModeConfirmDelete:
+			return m.updateConfirmDelete(msg)
+		}
+	case SpinnerTickMsg:
+		m.SpinnerFrame++
+		if m.Loading {
+			return m, m.spinnerTick
 		}
 	case AgentResultMsg:
 		if msg.Success {
@@ -96,15 +107,23 @@ func (m AgentsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = msg.Error
 		}
+		m.Loading = false
 		return m, m.fetchAgents
 	case []AgentData:
 		m.Agents = msg
+		m.Loading = false
 		return m, nil
 	case error:
 		m.err = msg
+		m.Loading = false
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m AgentsModel) spinnerTick() tea.Msg {
+	time.Sleep(80 * time.Millisecond)
+	return SpinnerTickMsg{}
 }
 
 func (m AgentsModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -125,10 +144,38 @@ func (m AgentsModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = nil
 	case "-", "delete", "backspace":
 		if len(m.Agents) > 0 {
-			return m, m.deleteAgent(m.Agents[m.Cursor].ID)
+			m.Dialog = components.DeleteAgentDialog(m.Agents[m.Cursor].Name)
+			m.Mode = AgentModeConfirmDelete
 		}
 	case "r":
-		return m, m.fetchAgents
+		m.Loading = true
+		return m, tea.Batch(m.fetchAgents, m.spinnerTick)
+	}
+	return m, nil
+}
+
+func (m AgentsModel) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n":
+		m.Mode = AgentModeList
+		m.Dialog.Visible = false
+	case "left", "right", "h", "l", "tab":
+		m.Dialog.ToggleSelection()
+	case "enter":
+		if m.Dialog.IsConfirmed() {
+			m.Dialog.Visible = false
+			m.Mode = AgentModeList
+			m.Loading = true
+			return m, tea.Batch(m.deleteAgent(m.Agents[m.Cursor].ID), m.spinnerTick)
+		} else {
+			m.Mode = AgentModeList
+			m.Dialog.Visible = false
+		}
+	case "y":
+		m.Dialog.Visible = false
+		m.Mode = AgentModeList
+		m.Loading = true
+		return m, tea.Batch(m.deleteAgent(m.Agents[m.Cursor].ID), m.spinnerTick)
 	}
 	return m, nil
 }
@@ -233,6 +280,8 @@ func (m AgentsModel) View() string {
 		return m.viewAdd()
 	case AgentModeResult:
 		return m.viewResult()
+	case AgentModeConfirmDelete:
+		return m.viewList() + components.ConfirmDialog(m.Dialog, m.Width, m.Height)
 	default:
 		return m.viewList()
 	}
@@ -243,7 +292,7 @@ func (m AgentsModel) viewList() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("AGENTS", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Agents") + "\n\n")
 
 	online, offline := 0, 0
 	for _, a := range m.Agents {
@@ -266,11 +315,15 @@ func (m AgentsModel) viewList() string {
 
 	b.WriteString(components.Section("AGENT LIST", w) + "\n\n")
 
+	if m.Loading {
+		b.WriteString(components.Loading(m.SpinnerFrame, "Loading agents...") + "\n\n")
+	}
+
 	var listContent strings.Builder
-	if len(m.Agents) == 0 {
+	if len(m.Agents) == 0 && !m.Loading {
 		listContent.WriteString("  " + styles.MutedStyle.Render("No agents registered") + "\n")
 		listContent.WriteString("  " + styles.SubtleStyle.Render("Press '+' to add your first agent"))
-	} else {
+	} else if len(m.Agents) > 0 {
 		for i, a := range m.Agents {
 			selected := i == m.Cursor
 			if selected && m.Expanded {
@@ -286,11 +339,18 @@ func (m AgentsModel) viewList() string {
 				}
 				listContent.WriteString(components.AgentCard(card, w-8) + "\n")
 			} else {
-				listContent.WriteString(components.AgentRow(a.Name, a.Online, a.CPU, a.Memory, a.Disk, a.Uptime, selected, w) + "\n")
+				row := components.AgentRow(a.Name, a.Online, a.CPU, a.Memory, a.Disk, a.Uptime, selected, w)
+				if selected {
+					listContent.WriteString(components.SelectedRow(row, true) + "\n")
+				} else {
+					listContent.WriteString(row + "\n")
+				}
 			}
 		}
 	}
-	b.WriteString(components.Wrap(listContent.String(), w) + "\n")
+	if listContent.Len() > 0 {
+		b.WriteString(components.Wrap(listContent.String(), w) + "\n")
+	}
 
 	content := b.String()
 	lines := helper.CountLines(content)
@@ -311,7 +371,7 @@ func (m AgentsModel) viewAdd() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("ADD AGENT", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Agents", "Add Agent") + "\n\n")
 
 	b.WriteString(components.Section("AGENT NAME", w) + "\n\n")
 
@@ -339,7 +399,7 @@ func (m AgentsModel) viewResult() string {
 	w := m.Width
 
 	b.WriteString("\n")
-	b.WriteString(components.Header("AGENT CREATED", w) + "\n\n")
+	b.WriteString(components.ViewHeader(w, "Dashboard", "Agents", "Agent Created") + "\n\n")
 
 	b.WriteString(components.MsgSuccess("Agent created successfully", w) + "\n\n")
 

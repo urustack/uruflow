@@ -454,15 +454,16 @@ func (d *Daemon) handleDeploy(cmd protocol.CommandPayload) {
 	})
 	d.safeWrite(startMsg)
 
-	d.deployer.OnLog(func(stream, line string) {
+	cmdID := cmd.ID
+	logHandler := func(stream, line string) {
 		logMsg, _ := protocol.NewMessage(protocol.TypeCommandLog, protocol.CommandLogPayload{
-			CommandID: cmd.ID,
+			CommandID: cmdID,
 			Line:      line,
 			Stream:    stream,
 			Timestamp: time.Now().Unix(),
 		})
 		d.safeWrite(logMsg)
-	})
+	}
 
 	cfg := deploy.Config{
 		URL:         deployPayload.URL,
@@ -478,7 +479,7 @@ func (d *Daemon) handleDeploy(cmd protocol.CommandPayload) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	result, err := d.deployer.Execute(ctx, cfg)
+	result, err := d.deployer.Execute(ctx, cfg, logHandler)
 
 	status := "success"
 	exitCode := 0

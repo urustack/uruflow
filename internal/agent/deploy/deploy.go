@@ -31,7 +31,6 @@ import (
 
 type Executor struct {
 	workDir string
-	onLog   func(stream, line string)
 }
 
 type Config struct {
@@ -58,11 +57,7 @@ func NewExecutor(workDir string) *Executor {
 	return &Executor{workDir: workDir}
 }
 
-func (e *Executor) OnLog(handler func(stream, line string)) {
-	e.onLog = handler
-}
-
-func (e *Executor) Execute(ctx context.Context, cfg Config) (*Result, error) {
+func (e *Executor) Execute(ctx context.Context, cfg Config, logFn func(stream, line string)) (*Result, error) {
 	start := time.Now()
 	result := &Result{}
 
@@ -71,10 +66,16 @@ func (e *Executor) Execute(ctx context.Context, cfg Config) (*Result, error) {
 		repoDir = cfg.Path
 	}
 
-	e.log("stdout", fmt.Sprintf("› Deploying %s", cfg.Name))
+	log := func(stream, line string) {
+		if logFn != nil {
+			logFn(stream, line)
+		}
+	}
 
-	e.log("stdout", "› Cloning/pulling repository...")
-	if err := e.cloneOrPull(ctx, cfg.URL, cfg.Branch, repoDir); err != nil {
+	log("stdout", fmt.Sprintf("› Deploying %s", cfg.Name))
+
+	log("stdout", "› Cloning/pulling repository...")
+	if err := e.cloneOrPull(ctx, cfg.URL, cfg.Branch, repoDir, log); err != nil {
 		result.Error = err.Error()
 		return result, err
 	}
@@ -84,8 +85,8 @@ func (e *Executor) Execute(ctx context.Context, cfg Config) (*Result, error) {
 		if len(shortCommit) > 7 {
 			shortCommit = shortCommit[:7]
 		}
-		e.log("stdout", fmt.Sprintf("› Checking out %s", shortCommit))
-		if err := e.runCmd(ctx, repoDir, "git", "checkout", cfg.Commit); err != nil {
+		log("stdout", fmt.Sprintf("› Checking out %s", shortCommit))
+		if err := e.runCmd(ctx, repoDir, log, "git", "checkout", cfg.Commit); err != nil {
 			result.Error = err.Error()
 			return result, err
 		}
@@ -97,12 +98,12 @@ func (e *Executor) Execute(ctx context.Context, cfg Config) (*Result, error) {
 	cmd, err := e.resolveCommand(repoDir, cfg)
 	if err != nil {
 		result.Error = err.Error()
-		e.log("stderr", result.Error)
+		log("stderr", result.Error)
 		return result, err
 	}
 
-	e.log("stdout", fmt.Sprintf("› Running: %s", cmd))
-	if err := e.runScript(ctx, repoDir, cmd, cfg.Env); err != nil {
+	log("stdout", fmt.Sprintf("› Running: %s", cmd))
+	if err := e.runScript(ctx, repoDir, cmd, cfg.Env, log); err != nil {
 		result.Error = err.Error()
 		return result, err
 	}
@@ -110,7 +111,7 @@ func (e *Executor) Execute(ctx context.Context, cfg Config) (*Result, error) {
 	result.Success = true
 	result.Duration = time.Since(start)
 
-	e.log("stdout", fmt.Sprintf("› Completed in %s", result.Duration.Round(time.Millisecond)))
+	log("stdout", fmt.Sprintf("› Completed in %s", result.Duration.Round(time.Millisecond)))
 
 	return result, nil
 }
@@ -177,18 +178,18 @@ func (e *Executor) fileExists(repoDir, file string) bool {
 	return err == nil
 }
 
-func (e *Executor) cloneOrPull(ctx context.Context, repoURL, branch, repoDir string) error {
+func (e *Executor) cloneOrPull(ctx context.Context, repoURL, branch, repoDir string, logFn func(string, string)) error {
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); os.IsNotExist(err) {
 		parentDir := filepath.Dir(repoDir)
 		os.MkdirAll(parentDir, 0755)
-		return e.runCmd(ctx, parentDir, "git", "clone", "-b", branch, "--single-branch", repoURL, filepath.Base(repoDir))
+		return e.runCmd(ctx, parentDir, logFn, "git", "clone", "-b", branch, "--single-branch", repoURL, filepath.Base(repoDir))
 	}
 
-	if err := e.runCmd(ctx, repoDir, "git", "fetch", "origin"); err != nil {
+	if err := e.runCmd(ctx, repoDir, logFn, "git", "fetch", "origin"); err != nil {
 		return err
 	}
 
-	return e.runCmd(ctx, repoDir, "git", "reset", "--hard", "origin/"+branch)
+	return e.runCmd(ctx, repoDir, logFn, "git", "reset", "--hard", "origin/"+branch)
 }
 
 func (e *Executor) getCommitHash(ctx context.Context, repoDir string) (string, error) {
@@ -201,7 +202,7 @@ func (e *Executor) getCommitHash(ctx context.Context, repoDir string) (string, e
 	return strings.TrimSpace(string(output)), nil
 }
 
-func (e *Executor) runScript(ctx context.Context, dir, script string, env map[string]string) error {
+func (e *Executor) runScript(ctx context.Context, dir, script string, env map[string]string, logFn func(string, string)) error {
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
@@ -218,11 +219,11 @@ func (e *Executor) runScript(ctx context.Context, dir, script string, env map[st
 
 	done := make(chan struct{})
 	go func() {
-		e.scanPipe(stdout, "stdout")
+		e.scanPipe(stdout, "stdout", logFn)
 		done <- struct{}{}
 	}()
 	go func() {
-		e.scanPipe(stderr, "stderr")
+		e.scanPipe(stderr, "stderr", logFn)
 		done <- struct{}{}
 	}()
 
@@ -232,7 +233,7 @@ func (e *Executor) runScript(ctx context.Context, dir, script string, env map[st
 	return cmd.Wait()
 }
 
-func (e *Executor) runCmd(ctx context.Context, dir string, name string, args ...string) error {
+func (e *Executor) runCmd(ctx context.Context, dir string, logFn func(string, string), name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 
@@ -245,11 +246,11 @@ func (e *Executor) runCmd(ctx context.Context, dir string, name string, args ...
 
 	done := make(chan struct{})
 	go func() {
-		e.scanPipe(stdout, "stdout")
+		e.scanPipe(stdout, "stdout", logFn)
 		done <- struct{}{}
 	}()
 	go func() {
-		e.scanPipe(stderr, "stderr")
+		e.scanPipe(stderr, "stderr", logFn)
 		done <- struct{}{}
 	}()
 
@@ -259,15 +260,11 @@ func (e *Executor) runCmd(ctx context.Context, dir string, name string, args ...
 	return cmd.Wait()
 }
 
-func (e *Executor) scanPipe(r interface{ Read([]byte) (int, error) }, stream string) {
+func (e *Executor) scanPipe(r interface{ Read([]byte) (int, error) }, stream string, logFn func(string, string)) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		e.log(stream, scanner.Text())
-	}
-}
-
-func (e *Executor) log(stream, line string) {
-	if e.onLog != nil {
-		e.onLog(stream, line)
+		if logFn != nil {
+			logFn(stream, scanner.Text())
+		}
 	}
 }
